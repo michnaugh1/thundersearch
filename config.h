@@ -8,6 +8,7 @@ typedef struct {
     GHashTable *usage_counts; /* app name -> launch count */
     char *config_path;
     char *history_path;
+    char *default_dir;        /* default directory for /fd command */
 } Config;
 
 Config *config_new(void);
@@ -18,5 +19,6 @@ void config_free(Config *config);
 const char *config_resolve_nickname(Config *config, const char *query);
 void config_increment_usage(Config *config, const char *app_name);
 int config_get_usage_count(Config *config, const char *app_name);
+const char *config_get_default_dir(Config *config);
 
 #endif /* CONFIG_H */
