@@ -14,7 +14,8 @@ SOURCES = main.c \
           matcher.c \
           launcher.c \
           config.c \
-          file_nav.c
+          file_nav.c \
+          win_nav.c
 
 OBJECTS = $(SOURCES:%.c=$(OBJ_DIR)/%.o)
 
