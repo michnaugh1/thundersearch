@@ -98,7 +98,7 @@ match_apps(AppIndex *index, Config *config, const char *query, int max_results)
     struct {
         Config *config;
         const char *query;
-    } sort_data = { config, query };
+    } sort_data = { config, resolved_query };
     
     matches = g_list_sort_with_data(matches, compare_matches, &sort_data);
 
