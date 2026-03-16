@@ -17,7 +17,9 @@ config_new(void)
     
     /* History file: ~/.local/share/thundersearch/history */
     config->history_path = g_build_filename(data_dir, "thundersearch", "history", NULL);
-    
+
+    config->default_dir = NULL;
+
     return config;
 }
 
@@ -57,9 +59,20 @@ config_load(Config *config)
                 char *real_name = g_strstrip(equals + 1);
                 
                 if (nickname[0] && real_name[0]) {
-                    g_hash_table_insert(config->nicknames, 
-                                      g_strdup(nickname), 
-                                      g_strdup(real_name));
+                    /* Handle special config keys */
+                    if (strcmp(nickname, "default_dir") == 0) {
+                        /* Expand ~ to home directory */
+                        if (real_name[0] == '~') {
+                            config->default_dir = g_build_filename(
+                                g_get_home_dir(), real_name + 1, NULL);
+                        } else {
+                            config->default_dir = g_strdup(real_name);
+                        }
+                    } else {
+                        g_hash_table_insert(config->nicknames,
+                                          g_strdup(nickname),
+                                          g_strdup(real_name));
+                    }
                 }
             }
         }
@@ -76,6 +89,9 @@ config_load(Config *config)
             fprintf(fp, "# ff = Firefox\n");
             fprintf(fp, "# spot = Spotify\n");
             fprintf(fp, "# term = Terminal\n");
+            fprintf(fp, "\n");
+            fprintf(fp, "# Default directory for /fd command:\n");
+            fprintf(fp, "# default_dir = ~/Projects\n");
             fprintf(fp, "\n");
             fclose(fp);
             g_print("Created example config at: %s\n", config->config_path);
@@ -143,6 +159,7 @@ config_free(Config *config)
     g_hash_table_destroy(config->usage_counts);
     g_free(config->config_path);
     g_free(config->history_path);
+    g_free(config->default_dir);
     g_free(config);
 }
 
@@ -166,4 +183,12 @@ int
 config_get_usage_count(Config *config, const char *app_name)
 {
     return GPOINTER_TO_INT(g_hash_table_lookup(config->usage_counts, app_name));
+}
+
+const char *
+config_get_default_dir(Config *config)
+{
+    if (config->default_dir)
+        return config->default_dir;
+    return g_get_home_dir();
 }
