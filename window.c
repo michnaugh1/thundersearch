@@ -5,6 +5,7 @@
 #include "matcher.h"
 #include "launcher.h"
 #include "file_nav.h"
+#include "win_nav.h"
 
 static void
 clear_listbox(GtkListBox *listbox)
@@ -25,11 +26,29 @@ clear_file_results(WindowData *data)
 }
 
 static void
+clear_win_results(WindowData *data)
+{
+    if (data->current_win_results) {
+        g_list_free_full(data->current_win_results, (GDestroyNotify)win_entry_free);
+        data->current_win_results = NULL;
+    }
+}
+
+static void
 cancel_file_timeout(WindowData *data)
 {
     if (data->file_auto_timeout > 0) {
         g_source_remove(data->file_auto_timeout);
         data->file_auto_timeout = 0;
+    }
+}
+
+static void
+cancel_win_timeout(WindowData *data)
+{
+    if (data->win_auto_timeout > 0) {
+        g_source_remove(data->win_auto_timeout);
+        data->win_auto_timeout = 0;
     }
 }
 
@@ -41,6 +60,7 @@ hide_window(WindowData *data)
     data->is_visible = FALSE;
 
     cancel_file_timeout(data);
+    cancel_win_timeout(data);
 
     data->suppress_entry_change = TRUE;
     gtk_editable_set_text(GTK_EDITABLE(data->entry), "");
@@ -51,6 +71,7 @@ hide_window(WindowData *data)
         data->current_matches = NULL;
     }
     clear_file_results(data);
+    clear_win_results(data);
     clear_listbox(GTK_LIST_BOX(data->listbox));
 
     gtk_widget_set_visible(data->window, FALSE);
@@ -343,14 +364,15 @@ update_file_results(WindowData *data, const char *after_prefix,
     /* Only search if the directory exists */
     GList *results = NULL;
     if (g_file_test(search_dir, G_FILE_TEST_IS_DIR)) {
-        results = file_nav_search(search_dir, query, 10);
+        results = file_nav_search(search_dir, query, 50);
     }
 
     data->current_file_results = results;
     int result_count = g_list_length(results);
 
-    /* Schedule debounced auto-fill if exactly one result */
-    if (result_count == 1) {
+    /* Schedule debounced auto-fill if exactly one result AND there's a query
+     * (don't auto-fill when just browsing with empty query) */
+    if (result_count == 1 && query && query[0] != '\0') {
         data->file_auto_timeout = g_timeout_add(200, file_auto_action_cb, data);
     }
 
@@ -359,6 +381,74 @@ update_file_results(WindowData *data, const char *after_prefix,
 
     g_free(search_dir);
     g_free(query);
+}
+
+/* --- Window navigation --- */
+
+/* Display a list of WinEntry results in the listbox */
+static void
+display_win_results(WindowData *data)
+{
+    for (GList *l = data->current_win_results; l != NULL; l = l->next) {
+        WinEntry *entry = (WinEntry *)l->data;
+        /* Format: "AppID - Title [workspace N]" */
+        char *display = g_strdup_printf("%s - %s  [workspace %u]",
+                                        entry->app_id ? entry->app_id : "?",
+                                        entry->title ? entry->title : "(untitled)",
+                                        entry->workspace_id);
+
+        GtkWidget *label = gtk_label_new(display);
+        gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+        gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+        g_free(display);
+
+        GtkWidget *row = gtk_list_box_row_new();
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), label);
+        gtk_list_box_append(GTK_LIST_BOX(data->listbox), row);
+    }
+}
+
+/*
+ * Debounce callback for /win: fires 200ms after last keystroke.
+ * If narrowed to one window, focus it and hide.
+ */
+static gboolean
+win_auto_focus_cb(gpointer user_data)
+{
+    WindowData *data = (WindowData *)user_data;
+    data->win_auto_timeout = 0;
+
+    if (!data->current_win_results)
+        return G_SOURCE_REMOVE;
+    if (g_list_length(data->current_win_results) != 1)
+        return G_SOURCE_REMOVE;
+
+    WinEntry *match = (WinEntry *)data->current_win_results->data;
+    guint id = match->id;
+
+    hide_window(data);
+    win_nav_focus(id);
+
+    return G_SOURCE_REMOVE;
+}
+
+static void
+update_win_results(WindowData *data, const char *query)
+{
+    cancel_win_timeout(data);
+    clear_win_results(data);
+    clear_listbox(GTK_LIST_BOX(data->listbox));
+
+    GList *results = win_nav_search(query, 50);
+    data->current_win_results = results;
+    int result_count = g_list_length(results);
+
+    /* Schedule debounced auto-focus if exactly one result and non-empty query */
+    if (result_count == 1 && query && query[0] != '\0') {
+        data->win_auto_timeout = g_timeout_add(200, win_auto_focus_cb, data);
+    }
+
+    display_win_results(data);
 }
 
 /* --- Signal handlers --- */
@@ -380,15 +470,34 @@ on_entry_changed(GtkEditable *editable, gpointer user_data)
     after_prefix = detect_file_prefix(text, &prefix, &cmd, data->config);
     if (after_prefix) {
         g_free(prefix);
+        clear_win_results(data);
+        cancel_win_timeout(data);
         update_file_results(data, after_prefix, cmd);
         return;
     }
 
     g_free(prefix);
 
+    /* /win prefix: window navigation */
+    if (g_str_has_prefix(text, "/win ")) {
+        cancel_file_timeout(data);
+        clear_file_results(data);
+        const char *win_query = text + 5;
+        update_win_results(data, win_query);
+        return;
+    }
+    if (g_strcmp0(text, "/win") == 0) {
+        cancel_file_timeout(data);
+        clear_file_results(data);
+        update_win_results(data, "");
+        return;
+    }
+
     /* Normal app search */
     cancel_file_timeout(data);
+    cancel_win_timeout(data);
     clear_file_results(data);
+    clear_win_results(data);
     update_app_results(data, text);
 }
 
@@ -496,6 +605,18 @@ on_key_pressed(GtkEventControllerKey *controller,
 
         g_free(prefix);
 
+        /* /win mode: Enter focuses the first window result */
+        if (g_str_has_prefix(text, "/win")) {
+            cancel_win_timeout(data);
+            if (data->current_win_results) {
+                WinEntry *first = (WinEntry *)data->current_win_results->data;
+                guint id = first->id;
+                hide_window(data);
+                win_nav_focus(id);
+            }
+            return TRUE;
+        }
+
         /* Normal app mode: Enter to launch first result */
         if (data->current_matches && g_list_length(data->current_matches) > 0) {
             AppEntry *app = (AppEntry *)data->current_matches->data;
@@ -517,9 +638,11 @@ on_window_destroy(GtkWidget *widget, gpointer user_data)
     (void)widget;
 
     cancel_file_timeout(data);
+    cancel_win_timeout(data);
     if (data->current_matches)
         g_list_free(data->current_matches);
     clear_file_results(data);
+    clear_win_results(data);
     g_free(data);
 }
 
@@ -609,8 +732,10 @@ create_launcher_window(GtkApplication *app, AppIndex *index, Config *config, Win
     data->current_matches = NULL;
     data->is_visible = TRUE;
     data->current_file_results = NULL;
+    data->current_win_results = NULL;
     data->suppress_entry_change = FALSE;
     data->file_auto_timeout = 0;
+    data->win_auto_timeout = 0;
 
     g_signal_connect(entry, "changed", G_CALLBACK(on_entry_changed), data);
     g_signal_connect(window, "destroy", G_CALLBACK(on_window_destroy), data);
