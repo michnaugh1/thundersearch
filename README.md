@@ -1,4 +1,4 @@
-# ThunderSearch -v0.1
+# thundersearch -v0.1
 
 A fast, keyboard-driven launcher for Wayland. Search applications, navigate files, and switch windows -- all from a single search bar.
 
@@ -17,20 +17,20 @@ That's what thundersearch is based on, but with more robust functionality, made 
 Below vidoes were recorded on an i3 4th Gen processor, MX500 ssd.
 
 
-Opening Applications
-https://github.com/user-attachments/assets/7a598505-0814-4a9a-8dfd-fb542c00364a
+Opening Applications <br>
+<video src="https://github.com/user-attachments/assets/7a598505-0814-4a9a-8dfd-fb542c00364a" height="352" width="720">
 
 
-Switching Windows From Across Workspaces
-https://github.com/user-attachments/assets/a58cef7b-0d33-4578-8825-20e0040417f6
+Switching Windows From Across Workspaces <br>
+<video src="https://github.com/user-attachments/assets/a58cef7b-0d33-4578-8825-20e0040417f6" height="352" width="720">
 
 
-Opening File Directories Directly In Your Default File Explorer
-https://github.com/user-attachments/assets/8d6df952-1117-40b0-81c9-e80a1c139a4d
+Opening File Directories Directly In Your Default File Explorer <br>
+<video src="https://github.com/user-attachments/assets/8d6df952-1117-40b0-81c9-e80a1c139a4d" height="352" width="720">
 
 
-Opening Files From Thundesearch
-https://github.com/user-attachments/assets/a70cdf36-91d2-4afd-882b-cb7ef9add973
+Opening Files From Thundesearch <br>
+<video src="https://github.com/user-attachments/assets/a70cdf36-91d2-4afd-882b-cb7ef9add973" height="352" width="720">
 
 
 
