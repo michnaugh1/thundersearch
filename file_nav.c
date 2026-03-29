@@ -134,3 +134,19 @@ file_nav_open_default(const char *path)
         g_error_free(error);
     }
 }
+
+void
+file_nav_open_with(const char *path, const char *app)
+{
+    GError *error = NULL;
+    char *argv[] = { (char *)app, (char *)path, NULL };
+
+    g_spawn_async(NULL, argv, NULL,
+                  G_SPAWN_SEARCH_PATH,
+                  NULL, NULL, NULL, &error);
+
+    if (error) {
+        g_warning("Failed to open %s with %s: %s", path, app, error->message);
+        g_error_free(error);
+    }
+}
