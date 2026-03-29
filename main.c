@@ -11,6 +11,14 @@ typedef struct {
     Config *config;
 } AppData;
 
+/* Callback when async app loading completes */
+static void
+on_apps_loaded(AppIndex *index, gpointer user_data)
+{
+    (void)user_data;
+    g_print("Loaded %d applications\n", app_index_get_count(index));
+}
+
 static void
 on_activate(GtkApplication *app, gpointer user_data)
 {
@@ -20,6 +28,12 @@ on_activate(GtkApplication *app, gpointer user_data)
     if (!global_window_data) {
         GtkWidget *window;
         window = create_launcher_window(app, app_data->index, app_data->config, &global_window_data);
+
+        /* Start async app loading if not already done */
+        if (!app_index_is_ready(app_data->index)) {
+            app_index_load_async(app_data->index, on_apps_loaded, app_data);
+        }
+
         gtk_window_present(GTK_WINDOW(window));
     } else {
         /* Toggle visibility on subsequent activations */
@@ -36,15 +50,14 @@ main(int argc, char *argv[])
     AppData app_data;
     int status;
 
-    /* Initialize config */
+    /* Initialize config (fast, OK to be synchronous) */
     config = config_new();
     config_load(config);
 
-    /* Initialize app index */
+    /* Initialize app index (empty - will load async on first window show) */
     index = app_index_new();
-    app_index_load(index);
+    /* Don't call app_index_load() here - let it load async */
 
-    g_print("Loaded %d applications\n", app_index_get_count(index));
     g_print("ThunderSearch running in daemon mode\n");
     g_print("Config: %s\n", config->config_path);
     g_print("History: %s\n", config->history_path);
