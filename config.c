@@ -11,6 +11,7 @@ config_new(void)
     
     config->nicknames = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     config->usage_counts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    config->file_openers = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     
     /* Config file: ~/.config/thundersearch/config */
     config->config_path = g_build_filename(config_dir, "thundersearch", "config", NULL);
@@ -50,7 +51,34 @@ config_load(Config *config)
             if (line[0] == '\0' || line[0] == '#') {
                 continue;
             }
-            
+
+            /* Parse "open .ext1 .ext2 = app_command" */
+            if (g_str_has_prefix(line, "open ")) {
+                char *equals = strchr(line, '=');
+                if (equals) {
+                    *equals = '\0';
+                    char *exts_part = g_strstrip(line + 5);  /* after "open " */
+                    char *app_cmd = g_strstrip(equals + 1);
+
+                    if (exts_part[0] && app_cmd[0]) {
+                        /* Split extensions by whitespace */
+                        char **exts = g_strsplit_set(exts_part, " \t", -1);
+                        for (int j = 0; exts[j] != NULL; j++) {
+                            char *ext = g_strstrip(exts[j]);
+                            if (ext[0] == '.') {
+                                /* Store as lowercase for case-insensitive lookup */
+                                char *ext_lower = g_ascii_strdown(ext, -1);
+                                g_hash_table_insert(config->file_openers,
+                                                    ext_lower,
+                                                    g_strdup(app_cmd));
+                            }
+                        }
+                        g_strfreev(exts);
+                    }
+                }
+                continue;
+            }
+
             /* Parse "nickname = real name" */
             char *equals = strchr(line, '=');
             if (equals) {
@@ -92,6 +120,12 @@ config_load(Config *config)
             fprintf(fp, "\n");
             fprintf(fp, "# Default directory for /fd command:\n");
             fprintf(fp, "# default_dir = ~/Projects\n");
+            fprintf(fp, "\n");
+            fprintf(fp, "# File openers for /f/o command:\n");
+            fprintf(fp, "# open .pdf .epub = zathura\n");
+            fprintf(fp, "# open .png .jpg .jpeg .gif .webp = imv\n");
+            fprintf(fp, "# open .mp4 .mkv .avi .webm = mpv\n");
+            fprintf(fp, "# open .txt .md .cfg .conf = gedit\n");
             fprintf(fp, "\n");
             fclose(fp);
             g_print("Created example config at: %s\n", config->config_path);
@@ -157,6 +191,7 @@ config_free(Config *config)
     
     g_hash_table_destroy(config->nicknames);
     g_hash_table_destroy(config->usage_counts);
+    g_hash_table_destroy(config->file_openers);
     g_free(config->config_path);
     g_free(config->history_path);
     g_free(config->default_dir);
@@ -191,4 +226,22 @@ config_get_default_dir(Config *config)
     if (config->default_dir)
         return config->default_dir;
     return g_get_home_dir();
+}
+
+const char *
+config_get_opener(Config *config, const char *filename)
+{
+    if (!filename)
+        return NULL;
+
+    /* Find the last dot for extension */
+    const char *dot = strrchr(filename, '.');
+    if (!dot || dot == filename)
+        return NULL;
+
+    char *ext_lower = g_ascii_strdown(dot, -1);
+    const char *app = g_hash_table_lookup(config->file_openers, ext_lower);
+    g_free(ext_lower);
+
+    return app;  /* NULL means use xdg-open */
 }
