@@ -6,6 +6,39 @@
 #include "launcher.h"
 #include "file_nav.h"
 #include "win_nav.h"
+#include "animation.h"
+
+/* Animation tick callback for show/hide */
+static gboolean
+window_anim_tick(gpointer user_data)
+{
+    WindowData *data = (WindowData *)user_data;
+
+    if (!animation_tick(data->show_anim)) {
+        /* Animation complete */
+        data->anim_tick_id = 0;
+
+        if (data->hiding) {
+            /* Hide complete - actually hide the window */
+            data->hiding = FALSE;
+            gtk_widget_set_visible(data->window, FALSE);
+        }
+
+        return G_SOURCE_REMOVE;
+    }
+
+    /* Apply animated values */
+    gdouble t = animation_value(data->show_anim);
+
+    /* Opacity: 0 -> 1 (or 1 -> 0 for hide) */
+    gtk_widget_set_opacity(data->main_container, t);
+
+    /* Slide up: start 30px below, end at 0 */
+    gint y_offset = (gint)((1.0 - t) * 30.0);
+    gtk_widget_set_margin_top(data->main_container, 16 + y_offset);
+
+    return G_SOURCE_CONTINUE;
+}
 
 static void
 clear_listbox(GtkListBox *listbox)
@@ -55,9 +88,10 @@ cancel_win_timeout(WindowData *data)
 static void
 hide_window(WindowData *data)
 {
-    if (!data->is_visible) return;
+    if (!data->is_visible || data->hiding) return;
 
     data->is_visible = FALSE;
+    data->hiding = TRUE;
 
     cancel_file_timeout(data);
     cancel_win_timeout(data);
@@ -74,7 +108,15 @@ hide_window(WindowData *data)
     clear_win_results(data);
     clear_listbox(GTK_LIST_BOX(data->listbox));
 
-    gtk_widget_set_visible(data->window, FALSE);
+    /* Hide results revealer */
+    gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), FALSE);
+
+    /* Start hide animation */
+    if (data->anim_tick_id > 0) {
+        g_source_remove(data->anim_tick_id);
+    }
+    animation_start(data->show_anim, 150, TRUE);  /* Reverse animation */
+    data->anim_tick_id = g_timeout_add(16, window_anim_tick, data);
 }
 
 static void
@@ -83,8 +125,21 @@ show_window(WindowData *data)
     if (data->is_visible) return;
 
     data->is_visible = TRUE;
+    data->hiding = FALSE;
+
+    /* Set initial state for animation */
+    gtk_widget_set_opacity(data->main_container, 0.0);
+    gtk_widget_set_margin_top(data->main_container, 46);  /* 16 + 30 offset */
+
     gtk_widget_set_visible(data->window, TRUE);
     gtk_widget_grab_focus(data->entry);
+
+    /* Start show animation */
+    if (data->anim_tick_id > 0) {
+        g_source_remove(data->anim_tick_id);
+    }
+    animation_start(data->show_anim, 200, FALSE);
+    data->anim_tick_id = g_timeout_add(16, window_anim_tick, data);
 }
 
 /* --- App search (unchanged logic) --- */
@@ -101,12 +156,19 @@ update_app_results(WindowData *data, const char *query)
     }
     clear_listbox(GTK_LIST_BOX(data->listbox));
 
-    if (!query || strlen(query) == 0)
+    if (!query || strlen(query) == 0) {
+        gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), FALSE);
         return;
+    }
 
     matches = match_apps(data->index, data->config, query, 10);
     match_count = g_list_length(matches);
     data->current_matches = matches;
+
+    if (match_count == 0) {
+        gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), FALSE);
+        return;
+    }
 
     if (match_count == 1) {
         AppEntry *app = (AppEntry *)matches->data;
@@ -118,15 +180,61 @@ update_app_results(WindowData *data, const char *query)
 
     for (GList *l = matches; l != NULL; l = l->next) {
         AppEntry *app = (AppEntry *)l->data;
-        GtkWidget *label = gtk_label_new(app->name);
-        gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+
+        /* Create row with icon and text */
+        GtkWidget *row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        gtk_widget_add_css_class(row_box, "result-row");
+
+        /* App icon */
+        GIcon *icon = g_app_info_get_icon(app->app_info);
+        GtkWidget *icon_widget;
+        if (icon) {
+            icon_widget = gtk_image_new_from_gicon(icon);
+        } else {
+            icon_widget = gtk_image_new_from_icon_name("application-x-executable");
+        }
+        gtk_image_set_pixel_size(GTK_IMAGE(icon_widget), 32);
+        gtk_box_append(GTK_BOX(row_box), icon_widget);
+
+        /* Text container */
+        GtkWidget *text_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        gtk_widget_set_valign(text_box, GTK_ALIGN_CENTER);
+
+        /* App name */
+        GtkWidget *title = gtk_label_new(app->name);
+        gtk_label_set_xalign(GTK_LABEL(title), 0.0);
+        gtk_widget_add_css_class(title, "result-title");
+        gtk_box_append(GTK_BOX(text_box), title);
+
+        /* App executable as subtitle */
+        GtkWidget *subtitle = gtk_label_new(app->exec);
+        gtk_label_set_xalign(GTK_LABEL(subtitle), 0.0);
+        gtk_label_set_ellipsize(GTK_LABEL(subtitle), PANGO_ELLIPSIZE_MIDDLE);
+        gtk_widget_add_css_class(subtitle, "result-subtitle");
+        gtk_box_append(GTK_BOX(text_box), subtitle);
+
+        gtk_box_append(GTK_BOX(row_box), text_box);
+
         GtkWidget *row = gtk_list_box_row_new();
-        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), label);
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), row_box);
         gtk_list_box_append(GTK_LIST_BOX(data->listbox), row);
     }
+
+    gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), TRUE);
 }
 
 /* --- File navigation --- */
+
+/* Open a file using configured opener, or fall back to xdg-open */
+static void
+open_file_with_config(WindowData *data, const char *path)
+{
+    const char *app = config_get_opener(data->config, path);
+    if (app)
+        file_nav_open_with(path, app);
+    else
+        file_nav_open_default(path);
+}
 
 /*
  * Detect command prefix. Returns pointer to after-prefix text, or NULL.
@@ -204,20 +312,44 @@ display_file_results(WindowData *data)
 {
     for (GList *l = data->current_file_results; l != NULL; l = l->next) {
         FileEntry *entry = (FileEntry *)l->data;
-        char *display_name;
 
+        /* Create row with icon and text */
+        GtkWidget *row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        gtk_widget_add_css_class(row_box, "result-row");
+
+        /* File/folder icon */
+        GtkWidget *icon_widget;
         if (entry->is_dir) {
-            display_name = g_strdup_printf("(%s)", entry->name);
+            icon_widget = gtk_image_new_from_icon_name("folder");
         } else {
-            display_name = g_strdup(entry->name);
+            icon_widget = gtk_image_new_from_icon_name("text-x-generic");
         }
+        gtk_image_set_pixel_size(GTK_IMAGE(icon_widget), 32);
+        gtk_box_append(GTK_BOX(row_box), icon_widget);
 
-        GtkWidget *label = gtk_label_new(display_name);
-        gtk_label_set_xalign(GTK_LABEL(label), 0.0);
-        g_free(display_name);
+        /* Text container */
+        GtkWidget *text_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        gtk_widget_set_valign(text_box, GTK_ALIGN_CENTER);
+
+        /* File name */
+        GtkWidget *title = gtk_label_new(entry->name);
+        gtk_label_set_xalign(GTK_LABEL(title), 0.0);
+        gtk_widget_add_css_class(title, "result-title");
+        gtk_box_append(GTK_BOX(text_box), title);
+
+        /* Path as subtitle */
+        char *parent = g_path_get_dirname(entry->full_path);
+        GtkWidget *subtitle = gtk_label_new(parent);
+        g_free(parent);
+        gtk_label_set_xalign(GTK_LABEL(subtitle), 0.0);
+        gtk_label_set_ellipsize(GTK_LABEL(subtitle), PANGO_ELLIPSIZE_START);
+        gtk_widget_add_css_class(subtitle, "result-subtitle");
+        gtk_box_append(GTK_BOX(text_box), subtitle);
+
+        gtk_box_append(GTK_BOX(row_box), text_box);
 
         GtkWidget *row = gtk_list_box_row_new();
-        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), label);
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), row_box);
         gtk_list_box_append(GTK_LIST_BOX(data->listbox), row);
     }
 }
@@ -293,7 +425,7 @@ file_auto_action_cb(gpointer user_data)
             g_free(new_text);
 
             if (cmd == FILE_CMD_OPEN) {
-                file_nav_open_default(saved_path);
+                open_file_with_config(data, saved_path);
             } else {
                 char *parent = g_path_get_dirname(saved_path);
                 file_nav_open_file_manager(parent);
@@ -322,7 +454,7 @@ file_auto_action_cb(gpointer user_data)
             file_nav_open_file_manager(saved_path);
         } else {
             if (cmd == FILE_CMD_OPEN) {
-                file_nav_open_default(saved_path);
+                open_file_with_config(data, saved_path);
             } else {
                 char *parent = g_path_get_dirname(saved_path);
                 file_nav_open_file_manager(parent);
@@ -379,6 +511,9 @@ update_file_results(WindowData *data, const char *after_prefix,
     /* Always display results */
     display_file_results(data);
 
+    /* Show/hide revealer based on results */
+    gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), result_count > 0);
+
     g_free(search_dir);
     g_free(query);
 }
@@ -391,19 +526,41 @@ display_win_results(WindowData *data)
 {
     for (GList *l = data->current_win_results; l != NULL; l = l->next) {
         WinEntry *entry = (WinEntry *)l->data;
-        /* Format: "AppID - Title [workspace N]" */
-        char *display = g_strdup_printf("%s - %s  [workspace %u]",
-                                        entry->app_id ? entry->app_id : "?",
-                                        entry->title ? entry->title : "(untitled)",
-                                        entry->workspace_id);
 
-        GtkWidget *label = gtk_label_new(display);
-        gtk_label_set_xalign(GTK_LABEL(label), 0.0);
-        gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
-        g_free(display);
+        /* Create row with icon and text */
+        GtkWidget *row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        gtk_widget_add_css_class(row_box, "result-row");
+
+        /* Window icon */
+        GtkWidget *icon_widget = gtk_image_new_from_icon_name("window");
+        gtk_image_set_pixel_size(GTK_IMAGE(icon_widget), 32);
+        gtk_box_append(GTK_BOX(row_box), icon_widget);
+
+        /* Text container */
+        GtkWidget *text_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        gtk_widget_set_valign(text_box, GTK_ALIGN_CENTER);
+
+        /* Window title */
+        GtkWidget *title = gtk_label_new(entry->title ? entry->title : "(untitled)");
+        gtk_label_set_xalign(GTK_LABEL(title), 0.0);
+        gtk_label_set_ellipsize(GTK_LABEL(title), PANGO_ELLIPSIZE_END);
+        gtk_widget_add_css_class(title, "result-title");
+        gtk_box_append(GTK_BOX(text_box), title);
+
+        /* App ID and workspace as subtitle */
+        char *subtitle_text = g_strdup_printf("%s • workspace %u",
+                                              entry->app_id ? entry->app_id : "?",
+                                              entry->workspace_id);
+        GtkWidget *subtitle = gtk_label_new(subtitle_text);
+        g_free(subtitle_text);
+        gtk_label_set_xalign(GTK_LABEL(subtitle), 0.0);
+        gtk_widget_add_css_class(subtitle, "result-subtitle");
+        gtk_box_append(GTK_BOX(text_box), subtitle);
+
+        gtk_box_append(GTK_BOX(row_box), text_box);
 
         GtkWidget *row = gtk_list_box_row_new();
-        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), label);
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), row_box);
         gtk_list_box_append(GTK_LIST_BOX(data->listbox), row);
     }
 }
@@ -449,6 +606,9 @@ update_win_results(WindowData *data, const char *query)
     }
 
     display_win_results(data);
+
+    /* Show/hide revealer based on results */
+    gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), result_count > 0);
 }
 
 /* --- Signal handlers --- */
@@ -564,7 +724,7 @@ on_key_pressed(GtkEventControllerKey *controller,
                 } else {
                     /* File: open based on command */
                     if (cmd == FILE_CMD_OPEN) {
-                        file_nav_open_default(saved_path);
+                        open_file_with_config(data, saved_path);
                     } else {
                         char *parent = g_path_get_dirname(saved_path);
                         file_nav_open_file_manager(parent);
@@ -639,16 +799,25 @@ on_window_destroy(GtkWidget *widget, gpointer user_data)
 
     cancel_file_timeout(data);
     cancel_win_timeout(data);
+    if (data->anim_tick_id > 0) {
+        g_source_remove(data->anim_tick_id);
+    }
     if (data->current_matches)
         g_list_free(data->current_matches);
     clear_file_results(data);
     clear_win_results(data);
+    animation_free(data->show_anim);
     g_free(data);
 }
 
 void
 toggle_window(WindowData *data)
 {
+    /* Don't toggle if animation is in progress */
+    if (data->hiding) {
+        return;
+    }
+
     if (data->is_visible) {
         hide_window(data);
     } else {
@@ -660,8 +829,11 @@ GtkWidget *
 create_launcher_window(GtkApplication *app, AppIndex *index, Config *config, WindowData **out_data)
 {
     GtkWidget *window;
-    GtkWidget *box;
+    GtkWidget *main_container;
+    GtkWidget *search_pill;
     GtkWidget *entry;
+    GtkWidget *results_revealer;
+    GtkWidget *results_container;
     GtkWidget *scrolled;
     GtkWidget *listbox;
     GtkEventController *key_controller;
@@ -670,63 +842,157 @@ create_launcher_window(GtkApplication *app, AppIndex *index, Config *config, Win
 
     window = gtk_application_window_new(app);
     gtk_window_set_title(GTK_WINDOW(window), "ThunderSearch");
-    gtk_window_set_default_size(GTK_WINDOW(window), 600, 400);
+    gtk_window_set_default_size(GTK_WINDOW(window), 680, -1);
+    gtk_window_set_resizable(GTK_WINDOW(window), FALSE);
 
+    /* Load CSS */
     css_provider = gtk_css_provider_new();
     gtk_css_provider_load_from_string(css_provider,
-        "window {"
-        "  border-radius: 12px;"
+        /* Window and all containers - fully transparent */
+        "window, window.background, box, scrolledwindow {"
+        "  background: transparent;"
+        "  background-color: transparent;"
+        "  border: none;"
+        "  box-shadow: none;"
+        "  outline: none;"
         "}"
-        "entry {"
-        "  border-radius: 8px;"
+        /* Search pill container */
+        ".search-pill {"
+        "  background: rgba(58, 58, 60, 0.95);"
+        "  border-radius: 26px;"
+        "  padding: 6px 20px;"
+        "}"
+        /* Entry inside pill - remove all borders and outlines */
+        ".search-pill entry, .search-pill entry:focus, .search-pill entry:hover {"
+        "  background: transparent;"
+        "  border: none;"
+        "  border-width: 0;"
+        "  box-shadow: none;"
+        "  outline: none;"
+        "  outline-width: 0;"
+        "  font-size: 20px;"
+        "  font-weight: 400;"
+        "  color: #ffffff;"
+        "  min-height: 44px;"
+        "  caret-color: #007AFF;"
+        "}"
+        "entry > text {"
+        "  background: transparent;"
+        "  border: none;"
+        "  box-shadow: none;"
+        "  outline: none;"
+        "}"
+        /* Results container */
+        ".results-container {"
+        "  background: rgba(40, 40, 42, 0.98);"
+        "  border-radius: 14px;"
         "  padding: 8px;"
-        "  font-size: 14pt;"
+        "  margin-top: 8px;"
         "}"
-        "listbox {"
-        "  border-radius: 8px;"
+        /* Listbox */
+        ".results-container listbox {"
+        "  background: transparent;"
         "}"
-        "listboxrow {"
-        "  padding: 8px;"
+        /* Result rows */
+        ".results-container row {"
+        "  padding: 8px 12px;"
+        "  border-radius: 10px;"
+        "  background: transparent;"
+        "  margin: 2px 0;"
+        "}"
+        ".results-container row:hover {"
+        "  background: rgba(255, 255, 255, 0.08);"
+        "}"
+        ".results-container row:selected {"
+        "  background: rgba(0, 122, 255, 0.4);"
+        "}"
+        /* Result row box layout */
+        ".result-row {"
+        "  padding: 0;"
+        "}"
+        ".result-row image {"
+        "  margin-right: 12px;"
+        "}"
+        /* Result text */
+        ".result-title {"
+        "  font-size: 15px;"
+        "  font-weight: 500;"
+        "  color: #ffffff;"
+        "}"
+        ".result-subtitle {"
+        "  font-size: 12px;"
+        "  color: rgba(255, 255, 255, 0.55);"
         "}");
     gtk_style_context_add_provider_for_display(
         gdk_display_get_default(),
         GTK_STYLE_PROVIDER(css_provider),
-        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        GTK_STYLE_PROVIDER_PRIORITY_USER);
     g_object_unref(css_provider);
 
+    /* Layer shell setup */
     gtk_layer_init_for_window(GTK_WINDOW(window));
     gtk_layer_set_layer(GTK_WINDOW(window), GTK_LAYER_SHELL_LAYER_OVERLAY);
     gtk_layer_set_keyboard_mode(GTK_WINDOW(window),
                                  GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
 
     gtk_layer_set_anchor(GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_TOP, TRUE);
-    gtk_layer_set_margin(GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_TOP, 100);
+    gtk_layer_set_margin(GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_TOP, 120);
 
-    box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_widget_set_margin_start(box, 10);
-    gtk_widget_set_margin_end(box, 10);
-    gtk_widget_set_margin_top(box, 10);
-    gtk_widget_set_margin_bottom(box, 10);
-    gtk_window_set_child(GTK_WINDOW(window), box);
+    /* Main container */
+    main_container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_widget_set_margin_start(main_container, 16);
+    gtk_widget_set_margin_end(main_container, 16);
+    gtk_widget_set_margin_top(main_container, 16);
+    gtk_widget_set_margin_bottom(main_container, 16);
+    gtk_window_set_child(GTK_WINDOW(window), main_container);
 
+    /* Search pill */
+    search_pill = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(search_pill, "search-pill");
+    gtk_box_append(GTK_BOX(main_container), search_pill);
+
+    /* Entry inside pill */
     entry = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Type to search applications...");
-    gtk_box_append(GTK_BOX(box), entry);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Search apps, files, windows...");
+    gtk_widget_set_hexpand(entry, TRUE);
+    gtk_box_append(GTK_BOX(search_pill), entry);
 
+    /* Results revealer (hidden by default) */
+    results_revealer = gtk_revealer_new();
+    gtk_revealer_set_transition_type(GTK_REVEALER(results_revealer),
+                                     GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);
+    gtk_revealer_set_transition_duration(GTK_REVEALER(results_revealer), 150);
+    gtk_revealer_set_reveal_child(GTK_REVEALER(results_revealer), FALSE);
+    gtk_box_append(GTK_BOX(main_container), results_revealer);
+
+    /* Results container inside revealer */
+    results_container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(results_container, "results-container");
+    gtk_revealer_set_child(GTK_REVEALER(results_revealer), results_container);
+
+    /* Scrolled window for results */
     scrolled = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled),
                                     GTK_POLICY_NEVER,
                                     GTK_POLICY_AUTOMATIC);
-    gtk_widget_set_vexpand(scrolled, TRUE);
-    gtk_box_append(GTK_BOX(box), scrolled);
+    gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(scrolled), 360);
+    gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(scrolled), TRUE);
+    gtk_box_append(GTK_BOX(results_container), scrolled);
 
+    /* Listbox */
     listbox = gtk_list_box_new();
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scrolled), listbox);
 
+    /* Setup WindowData */
     data = g_new0(WindowData, 1);
     data->entry = entry;
     data->listbox = listbox;
     data->window = window;
+    data->main_container = main_container;
+    data->search_pill = search_pill;
+    data->results_revealer = results_revealer;
+    data->results_container = results_container;
+    data->scrolled_window = scrolled;
     data->index = index;
     data->config = config;
     data->current_matches = NULL;
@@ -736,6 +1002,9 @@ create_launcher_window(GtkApplication *app, AppIndex *index, Config *config, Win
     data->suppress_entry_change = FALSE;
     data->file_auto_timeout = 0;
     data->win_auto_timeout = 0;
+    data->show_anim = animation_new();
+    data->anim_tick_id = 0;
+    data->hiding = FALSE;
 
     g_signal_connect(entry, "changed", G_CALLBACK(on_entry_changed), data);
     g_signal_connect(window, "destroy", G_CALLBACK(on_window_destroy), data);
