@@ -3,7 +3,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -O2 -std=c11
 CFLAGS += $(shell pkg-config --cflags gtk4 gtk4-layer-shell-0 gio-2.0)
-LDFLAGS = $(shell pkg-config --libs gtk4 gtk4-layer-shell-0 gio-2.0)
+LDFLAGS = $(shell pkg-config --libs gtk4 gtk4-layer-shell-0 gio-2.0) -lm
 
 TARGET = thundersearch
 OBJ_DIR = obj
@@ -15,7 +15,8 @@ SOURCES = main.c \
           launcher.c \
           config.c \
           file_nav.c \
-          win_nav.c
+          win_nav.c \
+          animation.c
 
 OBJECTS = $(SOURCES:%.c=$(OBJ_DIR)/%.o)
 
