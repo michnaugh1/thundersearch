@@ -30,7 +30,6 @@ sudo apt install libgtk-4-dev libgtk4-layer-shell-dev
 - gtk4-layer-shell
 - GLib / GIO
 - libX11 (for XWayland positioning)
-- niri compositor (for `/win` window switching)
 
 ### Compile
 
