@@ -1,6 +1,6 @@
 # ThunderSearch
 
-A fast, keyboard-driven launcher for Ubuntu GNOME. Search and launch applications, navigate files, switch windows, evaluate math, and interact with Claude — all from a single search bar that appears instantly wherever your cursor is.
+A fast, keyboard-driven launcher for Ubuntu GNOME. Search and launch applications, navigate files, switch windows, evaluate math, and interact with Claude — all from a single search bar that appears instantly wherever your cursor is. Based on [ThunderSearch](https://github.com/shantanubaddar/thundersearch).
 
 Built with C and GTK4. Runs under XWayland for reliable window positioning on GNOME Wayland sessions.
 
