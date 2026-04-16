@@ -6,28 +6,6 @@ Built with C and GTK4. Runs under XWayland for reliable window positioning on GN
 
 Inspired by [OLauncher](https://github.com/tanujnotes/Olauncher).
 
----
-
-Opening Applications
-<video src="https://github.com/user-attachments/assets/7a598505-0814-4a9a-8dfd-fb542c00364a" height="352" width="720">
-
-Switching Windows From Across Workspaces
-<video src="https://github.com/user-attachments/assets/a58cef7b-0d33-4578-8825-20e0040417f6" height="352" width="720">
-
-Opening File Directories Directly In Your Default File Explorer
-<video src="https://github.com/user-attachments/assets/8d6df952-1117-40b0-81c9-e80a1c139a4d" height="352" width="720">
-
-Opening Files From ThunderSearch
-<video src="https://github.com/user-attachments/assets/a70cdf36-91d2-4afd-882b-cb7ef9add973" height="352" width="720">
-
-<img width="758" height="576" alt="2026-03-30 15-27-28" src="https://github.com/user-attachments/assets/d77b5f0c-8a46-4540-8cc1-96ea8725e77b" />
-<img width="758" height="576" alt="2026-03-30 15-28-13" src="https://github.com/user-attachments/assets/4581b0f1-7c1e-437b-afe2-6961cb17201c" />
-<img width="758" height="576" alt="2026-03-30 15-27-56" src="https://github.com/user-attachments/assets/35b9df56-e915-4d64-9a2d-324416042b1d" />
-<img width="758" height="576" alt="2026-03-30 15-27-48" src="https://github.com/user-attachments/assets/8c4bd2f0-4109-4f6d-890b-b666984026d7" />
-<img width="758" height="576" alt="2026-03-30 15-27-40" src="https://github.com/user-attachments/assets/f4c0796a-1259-4f35-ba48-cf2a36d9d43a" />
-
----
-
 ## Features
 
 - **App launcher** — type to search, auto-launches when narrowed to one result
