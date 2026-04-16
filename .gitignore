@@ -1,0 +1,10 @@
+# Build output
+obj/
+thundersearch
+
+# Editor artifacts
+*.swp
+*.swo
+*~
+.vscode/
+.idea/

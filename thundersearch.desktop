@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=ThunderSearch
+Comment=Fast keyboard-driven launcher
+Exec=/usr/local/bin/thundersearch
+Icon=system-search
+Type=Application
+Categories=Utility;
+Keywords=launcher;search;run;
+StartupNotify=false
+NoDisplay=true

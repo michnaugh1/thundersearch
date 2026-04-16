@@ -3,7 +3,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -O2 -std=c11
 CFLAGS += $(shell pkg-config --cflags gtk4 gtk4-layer-shell-0 gio-2.0)
-LDFLAGS = $(shell pkg-config --libs gtk4 gtk4-layer-shell-0 gio-2.0) -lm
+LDFLAGS = $(shell pkg-config --libs gtk4 gtk4-layer-shell-0 gio-2.0) -lm -lX11
 
 TARGET = thundersearch
 OBJ_DIR = obj
@@ -39,16 +39,25 @@ $(OBJ_DIR)/%.o: %.c | $(OBJ_DIR)
 clean:
 	rm -rf $(OBJ_DIR) $(TARGET)
 
-# Install (optional)
+# Install binary + desktop file
 install: $(TARGET)
 	install -D -m 755 $(TARGET) $(DESTDIR)/usr/local/bin/$(TARGET)
+	install -D -m 644 thundersearch.desktop \
+		$(DESTDIR)/usr/share/applications/thundersearch.desktop
 
-# Uninstall (optional)
+# Install autostart entry for the current user (no DESTDIR support)
+install-autostart:
+	mkdir -p $(HOME)/.config/autostart
+	install -m 644 thundersearch.desktop $(HOME)/.config/autostart/thundersearch.desktop
+
+# Uninstall
 uninstall:
 	rm -f $(DESTDIR)/usr/local/bin/$(TARGET)
+	rm -f $(DESTDIR)/usr/share/applications/thundersearch.desktop
+	rm -f $(HOME)/.config/autostart/thundersearch.desktop
 
 # Run the program
 run: $(TARGET)
 	./$(TARGET)
 
-.PHONY: all clean install uninstall run
+.PHONY: all clean install install-autostart uninstall run

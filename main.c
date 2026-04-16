@@ -26,19 +26,16 @@ on_activate(GtkApplication *app, gpointer user_data)
 
     /* Create window only once (daemon mode) */
     if (!global_window_data) {
-        GtkWidget *window;
-        window = create_launcher_window(app, app_data->index, app_data->config, &global_window_data);
+        create_launcher_window(app, app_data->index, app_data->config, &global_window_data);
 
         /* Start async app loading if not already done */
         if (!app_index_is_ready(app_data->index)) {
             app_index_load_async(app_data->index, on_apps_loaded, app_data);
         }
-
-        gtk_window_present(GTK_WINDOW(window));
-    } else {
-        /* Toggle visibility on subsequent activations */
-        toggle_window(global_window_data);
     }
+
+    /* Toggle on every activation — first press shows, second hides, etc. */
+    toggle_window(global_window_data);
 }
 
 int
@@ -66,6 +63,11 @@ main(int argc, char *argv[])
     /* Setup app data */
     app_data.index = index;
     app_data.config = config;
+
+    /* Force X11 backend for reliable window positioning.
+     * On Wayland sessions this runs under XWayland, giving us
+     * override_redirect support and exact position control. */
+    g_setenv("GDK_BACKEND", "x11", FALSE);
 
     /* Create GTK application */
     app = gtk_application_new("com.thundersearch.launcher",

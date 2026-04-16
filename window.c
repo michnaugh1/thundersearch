@@ -1,12 +1,57 @@
 #include <gtk/gtk.h>
 #include <gtk4-layer-shell.h>
 #include <string.h>
+#ifdef GDK_WINDOWING_X11
+#include <gdk/x11/gdkx.h>
+#include <X11/Xlib.h>
+#endif
 #include "window.h"
 #include "matcher.h"
 #include "launcher.h"
 #include "file_nav.h"
 #include "win_nav.h"
 #include "animation.h"
+
+static void
+center_window_x11(GtkWidget *window)
+{
+#ifdef GDK_WINDOWING_X11
+    GdkDisplay *display = gdk_display_get_default();
+    if (!GDK_IS_X11_DISPLAY(display))
+        return;
+
+    GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(window));
+    if (!surface)
+        return;
+
+    /* Use the primary monitor. Avoid get_monitor_at_surface since the
+     * window may not have a valid position yet when called pre-map. */
+    GListModel *monitors = gdk_display_get_monitors(display);
+    GdkMonitor *monitor = g_list_model_get_item(monitors, 0);
+    if (!monitor)
+        return;
+
+    GdkRectangle geometry;
+    gdk_monitor_get_geometry(monitor, &geometry);
+    gint scale = gdk_monitor_get_scale_factor(monitor);
+    g_object_unref(monitor);
+
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    Display *xdisplay = gdk_x11_display_get_xdisplay(display);
+    Window xwindow = gdk_x11_surface_get_xid(surface);
+    G_GNUC_END_IGNORE_DEPRECATIONS
+
+    /* Geometry is in logical pixels; XMoveWindow needs physical pixels */
+    int win_width = 680;
+    int x = (geometry.x + (geometry.width - win_width) / 2) * scale;
+    int y = (geometry.y + 120) * scale;
+
+    XMoveWindow(xdisplay, xwindow, x, y);
+    XFlush(xdisplay);
+#else
+    (void)window;
+#endif
+}
 
 /* Animation tick callback for show/hide */
 static gboolean
@@ -35,7 +80,7 @@ window_anim_tick(gpointer user_data)
 
     /* Slide up: start 30px below, end at 0 */
     gint y_offset = (gint)((1.0 - t) * 30.0);
-    gtk_widget_set_margin_top(data->main_container, 16 + y_offset);
+    gtk_widget_set_margin_top(data->main_container, data->base_margin_top + y_offset);
 
     return G_SOURCE_CONTINUE;
 }
@@ -93,6 +138,19 @@ hide_window(WindowData *data)
     data->is_visible = FALSE;
     data->hiding = TRUE;
 
+#ifdef GDK_WINDOWING_X11
+    {
+        GdkDisplay *display = gdk_display_get_default();
+        if (GDK_IS_X11_DISPLAY(display)) {
+            G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+            Display *xdisplay = gdk_x11_display_get_xdisplay(display);
+            G_GNUC_END_IGNORE_DEPRECATIONS
+            XUngrabKeyboard(xdisplay, CurrentTime);
+            XFlush(xdisplay);
+        }
+    }
+#endif
+
     cancel_file_timeout(data);
     cancel_win_timeout(data);
 
@@ -127,17 +185,37 @@ show_window(WindowData *data)
     data->is_visible = TRUE;
     data->hiding = FALSE;
 
-    /* Set initial state for animation */
+    /* Set initial animation state */
     gtk_widget_set_opacity(data->main_container, 0.0);
-    gtk_widget_set_margin_top(data->main_container, 46);  /* 16 + 30 offset */
+    gtk_widget_set_margin_top(data->main_container, data->base_margin_top + 30);
+
+    /* With override_redirect the WM cannot touch us — position before map */
+    center_window_x11(data->window);
 
     gtk_widget_set_visible(data->window, TRUE);
     gtk_widget_grab_focus(data->entry);
 
-    /* Start show animation */
-    if (data->anim_tick_id > 0) {
-        g_source_remove(data->anim_tick_id);
+#ifdef GDK_WINDOWING_X11
+    /* Flush so XMapWindow reaches the server, then grab keyboard */
+    GdkDisplay *display = gdk_display_get_default();
+    if (GDK_IS_X11_DISPLAY(display)) {
+        GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(data->window));
+        if (surface) {
+            gdk_display_flush(display);
+            G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+            Display *xdisplay = gdk_x11_display_get_xdisplay(display);
+            Window xid = gdk_x11_surface_get_xid(surface);
+            G_GNUC_END_IGNORE_DEPRECATIONS
+            XSetInputFocus(xdisplay, xid, RevertToPointerRoot, CurrentTime);
+            XGrabKeyboard(xdisplay, xid, True,
+                          GrabModeAsync, GrabModeAsync, CurrentTime);
+            XFlush(xdisplay);
+        }
     }
+#endif
+
+    if (data->anim_tick_id > 0)
+        g_source_remove(data->anim_tick_id);
     animation_start(data->show_anim, 200, FALSE);
     data->anim_tick_id = g_timeout_add(16, window_anim_tick, data);
 }
@@ -679,8 +757,56 @@ on_key_pressed(GtkEventControllerKey *controller,
         return TRUE;
     }
 
-    /* Enter: perform action */
+    /* Arrow keys: navigate the result list without leaving the entry */
+    if (keyval == GDK_KEY_Down || keyval == GDK_KEY_Up) {
+        GtkListBox *lb = GTK_LIST_BOX(data->listbox);
+        GtkListBoxRow *cur = gtk_list_box_get_selected_row(lb);
+        int next;
+
+        if (!cur) {
+            next = (keyval == GDK_KEY_Down) ? 0 : -1;
+        } else {
+            next = gtk_list_box_row_get_index(cur)
+                   + (keyval == GDK_KEY_Down ? 1 : -1);
+        }
+
+        if (next < 0) {
+            /* Up past the first row — deselect so Enter uses index 0 */
+            gtk_list_box_unselect_all(lb);
+        } else {
+            GtkListBoxRow *row = gtk_list_box_get_row_at_index(lb, next);
+            if (row) {
+                gtk_list_box_select_row(lb, row);
+                /* Scroll the selected row into view */
+                GtkAdjustment *adj = gtk_scrolled_window_get_vadjustment(
+                    GTK_SCROLLED_WINDOW(data->scrolled_window));
+                int row_y = 0, row_h = 0;
+                GtkWidget *w = GTK_WIDGET(row);
+                graphene_point_t pt;
+                if (gtk_widget_compute_point(w, GTK_WIDGET(data->scrolled_window),
+                                             &GRAPHENE_POINT_INIT(0, 0), &pt))
+                    row_y = (int)pt.y;
+                row_h = gtk_widget_get_height(w);
+                double cur   = gtk_adjustment_get_value(adj);
+                double pgsz  = gtk_adjustment_get_page_size(adj);
+                if (row_y < cur)
+                    gtk_adjustment_set_value(adj, row_y);
+                else if (row_y + row_h > cur + pgsz)
+                    gtk_adjustment_set_value(adj, row_y + row_h - pgsz);
+            }
+        }
+        /* Keep keyboard focus in the entry so typing still works */
+        gtk_widget_grab_focus(data->entry);
+        return TRUE;
+    }
+
+    /* Enter: perform action on selected row (fallback to first) */
     if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter) {
+        /* Determine which list index is active */
+        GtkListBoxRow *sel = gtk_list_box_get_selected_row(
+                                 GTK_LIST_BOX(data->listbox));
+        int sel_idx = sel ? gtk_list_box_row_get_index(sel) : 0;
+
         const char *text = gtk_editable_get_text(GTK_EDITABLE(data->entry));
         char *prefix = NULL;
         FileCommand cmd;
@@ -688,18 +814,20 @@ on_key_pressed(GtkEventControllerKey *controller,
                                                        data->config);
 
         if (after_prefix) {
-            /* File mode: Enter confirms action */
+            /* File mode: Enter confirms action on selected item */
             cancel_file_timeout(data);
 
             if (data->current_file_results) {
-                FileEntry *first = (FileEntry *)data->current_file_results->data;
-                char *saved_path = g_strdup(first->full_path);
-                char *saved_name = g_strdup(first->name);
-                gboolean saved_is_dir = first->is_dir;
+                GList *node = g_list_nth(data->current_file_results,
+                                         (guint)sel_idx);
+                if (!node) node = data->current_file_results;
+                FileEntry *entry = (FileEntry *)node->data;
+                char *saved_path = g_strdup(entry->full_path);
+                char *saved_name = g_strdup(entry->name);
+                gboolean saved_is_dir = entry->is_dir;
                 gboolean path_mode = (after_prefix[0] == '/');
 
                 if (path_mode && saved_is_dir) {
-                    /* In path mode, Enter on a directory = navigate into it */
                     const char *last_slash = strrchr(after_prefix, '/');
                     size_t stable_len = strlen(prefix) +
                                         (size_t)(last_slash - after_prefix) + 1;
@@ -718,11 +846,9 @@ on_key_pressed(GtkEventControllerKey *controller,
                     data->current_file_results = results;
                     display_file_results(data);
                 } else if (saved_is_dir) {
-                    /* Simple mode directory: open file manager */
                     file_nav_open_file_manager(saved_path);
                     hide_window(data);
                 } else {
-                    /* File: open based on command */
                     if (cmd == FILE_CMD_OPEN) {
                         open_file_with_config(data, saved_path);
                     } else {
@@ -736,7 +862,6 @@ on_key_pressed(GtkEventControllerKey *controller,
                 g_free(saved_path);
                 g_free(saved_name);
             } else {
-                /* No results but in path mode: open file manager at current dir */
                 gboolean path_mode = (after_prefix[0] == '/');
                 if (path_mode) {
                     const char *base_dir;
@@ -750,9 +875,8 @@ on_key_pressed(GtkEventControllerKey *controller,
                     gboolean pm = FALSE;
                     parse_file_query(after_prefix, base_dir,
                                      &search_dir, &query, &pm);
-                    if (g_file_test(search_dir, G_FILE_TEST_IS_DIR)) {
+                    if (g_file_test(search_dir, G_FILE_TEST_IS_DIR))
                         file_nav_open_file_manager(search_dir);
-                    }
                     g_free(search_dir);
                     g_free(query);
                     hide_window(data);
@@ -765,21 +889,26 @@ on_key_pressed(GtkEventControllerKey *controller,
 
         g_free(prefix);
 
-        /* /win mode: Enter focuses the first window result */
+        /* /win mode */
         if (g_str_has_prefix(text, "/win")) {
             cancel_win_timeout(data);
             if (data->current_win_results) {
-                WinEntry *first = (WinEntry *)data->current_win_results->data;
-                guint id = first->id;
+                GList *node = g_list_nth(data->current_win_results,
+                                         (guint)sel_idx);
+                if (!node) node = data->current_win_results;
+                WinEntry *win = (WinEntry *)node->data;
+                guint id = win->id;
                 hide_window(data);
                 win_nav_focus(id);
             }
             return TRUE;
         }
 
-        /* Normal app mode: Enter to launch first result */
-        if (data->current_matches && g_list_length(data->current_matches) > 0) {
-            AppEntry *app = (AppEntry *)data->current_matches->data;
+        /* Normal app mode */
+        if (data->current_matches) {
+            GList *node = g_list_nth(data->current_matches, (guint)sel_idx);
+            if (!node) node = data->current_matches;
+            AppEntry *app = (AppEntry *)node->data;
             config_increment_usage(data->config, app->name);
             launch_app(app);
             hide_window(data);
@@ -799,15 +928,40 @@ on_window_destroy(GtkWidget *widget, gpointer user_data)
 
     cancel_file_timeout(data);
     cancel_win_timeout(data);
-    if (data->anim_tick_id > 0) {
+    if (data->anim_tick_id > 0)
         g_source_remove(data->anim_tick_id);
-    }
     if (data->current_matches)
         g_list_free(data->current_matches);
     clear_file_results(data);
     clear_win_results(data);
     animation_free(data->show_anim);
     g_free(data);
+}
+
+static void
+on_window_realize(GtkWidget *widget, gpointer user_data)
+{
+    (void)user_data;
+#ifdef GDK_WINDOWING_X11
+    GdkDisplay *display = gdk_display_get_default();
+    if (!GDK_IS_X11_DISPLAY(display))
+        return;
+
+    GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(widget));
+    if (!surface)
+        return;
+
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    Display *xdisplay = gdk_x11_display_get_xdisplay(display);
+    Window xid = gdk_x11_surface_get_xid(surface);
+    G_GNUC_END_IGNORE_DEPRECATIONS
+
+    /* Bypass the window manager — we control position and focus entirely */
+    XSetWindowAttributes attrs = {0};
+    attrs.override_redirect = True;
+    XChangeWindowAttributes(xdisplay, xid, CWOverrideRedirect, &attrs);
+    XFlush(xdisplay);
+#endif
 }
 
 void
@@ -840,10 +994,14 @@ create_launcher_window(GtkApplication *app, AppIndex *index, Config *config, Win
     GtkCssProvider *css_provider;
     WindowData *data;
 
+    gboolean use_layer_shell = gtk_layer_is_supported();
+
     window = gtk_application_window_new(app);
     gtk_window_set_title(GTK_WINDOW(window), "ThunderSearch");
-    gtk_window_set_default_size(GTK_WINDOW(window), 680, -1);
     gtk_window_set_resizable(GTK_WINDOW(window), FALSE);
+    gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
+
+    gtk_window_set_default_size(GTK_WINDOW(window), 680, -1);
 
     /* Load CSS */
     css_provider = gtk_css_provider_new();
@@ -929,14 +1087,15 @@ create_launcher_window(GtkApplication *app, AppIndex *index, Config *config, Win
         GTK_STYLE_PROVIDER_PRIORITY_USER);
     g_object_unref(css_provider);
 
-    /* Layer shell setup */
-    gtk_layer_init_for_window(GTK_WINDOW(window));
-    gtk_layer_set_layer(GTK_WINDOW(window), GTK_LAYER_SHELL_LAYER_OVERLAY);
-    gtk_layer_set_keyboard_mode(GTK_WINDOW(window),
-                                 GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
-
-    gtk_layer_set_anchor(GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_TOP, TRUE);
-    gtk_layer_set_margin(GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_TOP, 120);
+    /* Layer shell setup (Wayland + wlr-layer-shell only) */
+    if (use_layer_shell) {
+        gtk_layer_init_for_window(GTK_WINDOW(window));
+        gtk_layer_set_layer(GTK_WINDOW(window), GTK_LAYER_SHELL_LAYER_OVERLAY);
+        gtk_layer_set_keyboard_mode(GTK_WINDOW(window),
+                                     GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
+        gtk_layer_set_anchor(GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_TOP, TRUE);
+        gtk_layer_set_margin(GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_TOP, 120);
+    }
 
     /* Main container */
     main_container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
@@ -944,6 +1103,7 @@ create_launcher_window(GtkApplication *app, AppIndex *index, Config *config, Win
     gtk_widget_set_margin_end(main_container, 16);
     gtk_widget_set_margin_top(main_container, 16);
     gtk_widget_set_margin_bottom(main_container, 16);
+
     gtk_window_set_child(GTK_WINDOW(window), main_container);
 
     /* Search pill */
@@ -996,7 +1156,7 @@ create_launcher_window(GtkApplication *app, AppIndex *index, Config *config, Win
     data->index = index;
     data->config = config;
     data->current_matches = NULL;
-    data->is_visible = TRUE;
+    data->is_visible = FALSE;   /* Start hidden; first toggle shows it */
     data->current_file_results = NULL;
     data->current_win_results = NULL;
     data->suppress_entry_change = FALSE;
@@ -1005,16 +1165,25 @@ create_launcher_window(GtkApplication *app, AppIndex *index, Config *config, Win
     data->show_anim = animation_new();
     data->anim_tick_id = 0;
     data->hiding = FALSE;
+    data->base_margin_top = 16;
 
     g_signal_connect(entry, "changed", G_CALLBACK(on_entry_changed), data);
     g_signal_connect(window, "destroy", G_CALLBACK(on_window_destroy), data);
+    g_signal_connect(window, "realize", G_CALLBACK(on_window_realize), NULL);
 
     key_controller = gtk_event_controller_key_new();
+    /* CAPTURE phase: intercept keys before GtkEntry can consume them.
+     * We return TRUE for Escape/Enter/arrows, FALSE for everything else
+     * so normal typing still reaches the entry. */
+    gtk_event_controller_set_propagation_phase(
+        GTK_EVENT_CONTROLLER(key_controller), GTK_PHASE_CAPTURE);
     g_signal_connect(key_controller, "key-pressed",
                      G_CALLBACK(on_key_pressed), data);
     gtk_widget_add_controller(window, key_controller);
 
-    gtk_widget_grab_focus(entry);
+    /* Realize now (creates the X surface) so override_redirect is set
+     * before the window is ever mapped */
+    gtk_widget_realize(window);
 
     if (out_data) {
         *out_data = data;

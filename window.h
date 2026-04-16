@@ -29,6 +29,7 @@ typedef struct {
     AnimationState *show_anim;      /* Window show animation */
     guint anim_tick_id;             /* Animation tick source ID */
     gboolean hiding;                /* TRUE during hide animation */
+    gint base_margin_top;           /* Base top margin for animation */
 } WindowData;
 
 GtkWidget *create_launcher_window(GtkApplication *app, AppIndex *index, Config *config, WindowData **out_data);
