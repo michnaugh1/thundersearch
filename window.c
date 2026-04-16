@@ -52,8 +52,9 @@ get_monitor_at_cursor(GdkDisplay *display)
 }
 
 static void
-center_window_x11(GtkWidget *window)
+center_window_x11(WindowData *data)
 {
+    GtkWidget *window = data->window;
 #ifdef GDK_WINDOWING_X11
     GdkDisplay *display = gdk_display_get_default();
     if (!GDK_IS_X11_DISPLAY(display))
@@ -78,9 +79,9 @@ center_window_x11(GtkWidget *window)
     G_GNUC_END_IGNORE_DEPRECATIONS
 
     /* Geometry is in logical pixels; XMoveWindow needs physical pixels */
-    int win_width = 680;
+    int win_width = data->config->win_width;
     int x = (geometry.x + (geometry.width - win_width) / 2) * scale;
-    int y = (geometry.y + 120) * scale;
+    int y = (geometry.y + data->config->top_offset) * scale;
 
     XMoveWindow(xdisplay, xwindow, x, y);
     XFlush(xdisplay);
@@ -234,7 +235,7 @@ show_window(WindowData *data)
     gtk_widget_set_margin_top(data->main_container, data->base_margin_top + 30);
 
     /* With override_redirect the WM cannot touch us — position before map */
-    center_window_x11(data->window);
+    center_window_x11(data);
 
     gtk_widget_set_visible(data->window, TRUE);
     gtk_widget_grab_focus(data->entry);
@@ -283,7 +284,7 @@ update_app_results(WindowData *data, const char *query)
         return;
     }
 
-    matches = match_apps(data->index, data->config, query, 10);
+    matches = match_apps(data->index, data->config, query, data->config->max_app_results);
     match_count = g_list_length(matches);
     data->current_matches = matches;
 
@@ -533,7 +534,7 @@ file_auto_action_cb(gpointer user_data)
             clear_file_results(data);
             clear_listbox(GTK_LIST_BOX(data->listbox));
 
-            GList *results = file_nav_search(saved_path, "", 10);
+            GList *results = file_nav_search(saved_path, "", data->config->max_file_results);
             data->current_file_results = results;
             display_file_results(data);
 
@@ -619,7 +620,7 @@ update_file_results(WindowData *data, const char *after_prefix,
     /* Only search if the directory exists */
     GList *results = NULL;
     if (g_file_test(search_dir, G_FILE_TEST_IS_DIR)) {
-        results = file_nav_search(search_dir, query, 50);
+        results = file_nav_search(search_dir, query, data->config->max_file_results);
     }
 
     data->current_file_results = results;
@@ -721,7 +722,7 @@ update_win_results(WindowData *data, const char *query)
     clear_win_results(data);
     clear_listbox(GTK_LIST_BOX(data->listbox));
 
-    GList *results = win_nav_search(query, 50);
+    GList *results = win_nav_search(query, data->config->max_win_results);
     data->current_win_results = results;
     int result_count = g_list_length(results);
 
@@ -891,7 +892,7 @@ on_key_pressed(GtkEventControllerKey *controller,
 
                     clear_file_results(data);
                     clear_listbox(GTK_LIST_BOX(data->listbox));
-                    GList *results = file_nav_search(saved_path, "", 10);
+                    GList *results = file_nav_search(saved_path, "", data->config->max_file_results);
                     data->current_file_results = results;
                     display_file_results(data);
                 } else if (saved_is_dir) {
@@ -1050,7 +1051,7 @@ create_launcher_window(GtkApplication *app, AppIndex *index, Config *config, Win
     gtk_window_set_resizable(GTK_WINDOW(window), FALSE);
     gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
 
-    gtk_window_set_default_size(GTK_WINDOW(window), 680, -1);
+    gtk_window_set_default_size(GTK_WINDOW(window), config->win_width, -1);
 
     /* Load CSS */
     css_provider = gtk_css_provider_new();
@@ -1143,7 +1144,7 @@ create_launcher_window(GtkApplication *app, AppIndex *index, Config *config, Win
         gtk_layer_set_keyboard_mode(GTK_WINDOW(window),
                                      GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
         gtk_layer_set_anchor(GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_TOP, TRUE);
-        gtk_layer_set_margin(GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_TOP, 120);
+        gtk_layer_set_margin(GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_TOP, config->top_offset);
     }
 
     /* Main container */

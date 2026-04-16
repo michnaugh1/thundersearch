@@ -20,6 +20,11 @@ config_new(void)
     config->history_path = g_build_filename(data_dir, "thundersearch", "history", NULL);
 
     config->default_dir = NULL;
+    config->win_width = 680;
+    config->top_offset = 120;
+    config->max_app_results = 10;
+    config->max_file_results = 50;
+    config->max_win_results = 50;
 
     return config;
 }
@@ -79,13 +84,41 @@ config_load(Config *config)
                 continue;
             }
 
+            /* Parse "set key = value" (numeric/path settings) */
+            if (g_str_has_prefix(line, "set ")) {
+                char *equals = strchr(line, '=');
+                if (equals) {
+                    *equals = '\0';
+                    char *key = g_strstrip(line + 4);
+                    char *val = g_strstrip(equals + 1);
+                    if (strcmp(key, "win_width") == 0)
+                        config->win_width = atoi(val);
+                    else if (strcmp(key, "top_offset") == 0)
+                        config->top_offset = atoi(val);
+                    else if (strcmp(key, "max_app_results") == 0)
+                        config->max_app_results = atoi(val);
+                    else if (strcmp(key, "max_file_results") == 0)
+                        config->max_file_results = atoi(val);
+                    else if (strcmp(key, "max_win_results") == 0)
+                        config->max_win_results = atoi(val);
+                    else if (strcmp(key, "default_dir") == 0) {
+                        g_free(config->default_dir);
+                        if (val[0] == '~')
+                            config->default_dir = g_build_filename(g_get_home_dir(), val + 1, NULL);
+                        else
+                            config->default_dir = g_strdup(val);
+                    }
+                }
+                continue;
+            }
+
             /* Parse "nickname = real name" */
             char *equals = strchr(line, '=');
             if (equals) {
                 *equals = '\0';
                 char *nickname = g_strstrip(line);
                 char *real_name = g_strstrip(equals + 1);
-                
+
                 if (nickname[0] && real_name[0]) {
                     /* Handle special config keys */
                     if (strcmp(nickname, "default_dir") == 0) {
@@ -112,16 +145,25 @@ config_load(Config *config)
         fp = fopen(config->config_path, "w");
         if (fp) {
             fprintf(fp, "# ThunderSearch Configuration\n");
-            fprintf(fp, "# Format: nickname = Real Application Name\n");
-            fprintf(fp, "# Example:\n");
+            fprintf(fp, "\n");
+            fprintf(fp, "# --- Appearance ---\n");
+            fprintf(fp, "# set win_width = 680        # window width in pixels\n");
+            fprintf(fp, "# set top_offset = 120       # distance from top of monitor in pixels\n");
+            fprintf(fp, "\n");
+            fprintf(fp, "# --- Result limits ---\n");
+            fprintf(fp, "# set max_app_results = 10\n");
+            fprintf(fp, "# set max_file_results = 50\n");
+            fprintf(fp, "# set max_win_results = 50\n");
+            fprintf(fp, "\n");
+            fprintf(fp, "# --- Default directory for /fd command ---\n");
+            fprintf(fp, "# set default_dir = ~/Projects\n");
+            fprintf(fp, "\n");
+            fprintf(fp, "# --- App nicknames (nickname = Real Application Name) ---\n");
             fprintf(fp, "# ff = Firefox\n");
             fprintf(fp, "# spot = Spotify\n");
             fprintf(fp, "# term = Terminal\n");
             fprintf(fp, "\n");
-            fprintf(fp, "# Default directory for /fd command:\n");
-            fprintf(fp, "# default_dir = ~/Projects\n");
-            fprintf(fp, "\n");
-            fprintf(fp, "# File openers for /f/o command:\n");
+            fprintf(fp, "# --- File openers for /f/o command ---\n");
             fprintf(fp, "# open .pdf .epub = zathura\n");
             fprintf(fp, "# open .png .jpg .jpeg .gif .webp = imv\n");
             fprintf(fp, "# open .mp4 .mkv .avi .webm = mpv\n");

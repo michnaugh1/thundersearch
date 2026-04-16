@@ -10,6 +10,11 @@ typedef struct {
     char *config_path;
     char *history_path;
     char *default_dir;          /* default directory for /fd command */
+    int win_width;              /* window width in pixels */
+    int top_offset;             /* distance from top of monitor in pixels */
+    int max_app_results;        /* max app results to show */
+    int max_file_results;       /* max file results to show */
+    int max_win_results;        /* max window results to show */
 } Config;
 
 Config *config_new(void);
