@@ -874,6 +874,11 @@ launch_claude_session(WindowData *data, const char *dir_input)
         return;
     }
 
+    /* Build a clean environment: inherit everything but remove GDK_BACKEND
+     * so the spawned terminal (a Wayland-native app) isn't forced onto X11. */
+    char **envp = g_get_environ();
+    envp = g_environ_unsetenv(envp, "GDK_BACKEND");
+
     GError *error = NULL;
 
     /* Prefer xdg-terminal-exec: supports --dir natively, no shell quoting needed */
@@ -881,7 +886,7 @@ launch_claude_session(WindowData *data, const char *dir_input)
     if (xdg_term) {
         char *dir_flag = g_strdup_printf("--dir=%s", dir);
         const char *argv[] = { xdg_term, dir_flag, "--", claude_path, NULL };
-        g_spawn_async(NULL, (char **)argv, NULL,
+        g_spawn_async(NULL, (char **)argv, envp,
                       G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &error);
         g_free(dir_flag);
         g_free(xdg_term);
@@ -890,6 +895,7 @@ launch_claude_session(WindowData *data, const char *dir_input)
         char *term_path = find_terminal_path(data);
         if (!term_path) {
             g_warning("thundersearch: no terminal emulator found");
+            g_strfreev(envp);
             g_free(claude_path);
             g_free(dir);
             return;
@@ -898,7 +904,7 @@ launch_claude_session(WindowData *data, const char *dir_input)
         char *shell_cmd = g_strdup_printf("cd %s && %s", quoted_dir, claude_path);
         g_free(quoted_dir);
         const char *argv[] = { term_path, "-e", "bash", "-c", shell_cmd, NULL };
-        g_spawn_async(NULL, (char **)argv, NULL,
+        g_spawn_async(NULL, (char **)argv, envp,
                       G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &error);
         g_free(term_path);
         g_free(shell_cmd);
@@ -909,6 +915,7 @@ launch_claude_session(WindowData *data, const char *dir_input)
         g_error_free(error);
     }
 
+    g_strfreev(envp);
     g_free(claude_path);
     g_free(dir);
 }
