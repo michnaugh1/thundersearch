@@ -25,7 +25,6 @@ config_new(void)
     config->top_offset = 120;
     config->max_app_results = 10;
     config->max_file_results = 50;
-    config->max_win_results = 50;
 
     return config;
 }
@@ -100,8 +99,6 @@ config_load(Config *config)
                         config->max_app_results = atoi(val);
                     else if (strcmp(key, "max_file_results") == 0)
                         config->max_file_results = atoi(val);
-                    else if (strcmp(key, "max_win_results") == 0)
-                        config->max_win_results = atoi(val);
                     else if (strcmp(key, "default_dir") == 0) {
                         g_free(config->default_dir);
                         if (val[0] == '~')
@@ -160,7 +157,6 @@ config_load(Config *config)
             fprintf(fp, "# --- Result limits ---\n");
             fprintf(fp, "# set max_app_results = 10\n");
             fprintf(fp, "# set max_file_results = 50\n");
-            fprintf(fp, "# set max_win_results = 50\n");
             fprintf(fp, "\n");
             fprintf(fp, "# --- Default directory for /fd command ---\n");
             fprintf(fp, "# set default_dir = ~/Projects\n");

@@ -15,7 +15,6 @@ SOURCES = main.c \
           launcher.c \
           config.c \
           file_nav.c \
-          win_nav.c \
           animation.c \
           calc.c
 

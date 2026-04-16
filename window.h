@@ -5,7 +5,6 @@
 #include "app_index.h"
 #include "config.h"
 #include "file_nav.h"
-#include "win_nav.h"
 #include "animation.h"
 
 typedef struct {
@@ -22,10 +21,8 @@ typedef struct {
     GList *current_matches;
     gboolean is_visible;
     GList *current_file_results;    /* Current file search results */
-    GList *current_win_results;     /* Current window search results */
     gboolean suppress_entry_change; /* Suppress on_entry_changed re-trigger */
     guint file_auto_timeout;        /* Debounce timeout for auto-fill */
-    guint win_auto_timeout;         /* Debounce timeout for window auto-focus */
     AnimationState *show_anim;      /* Window show animation */
     guint anim_tick_id;             /* Animation tick source ID */
     gboolean hiding;                /* TRUE during hide animation */

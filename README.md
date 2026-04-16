@@ -10,7 +10,6 @@ Inspired by [OLauncher](https://github.com/tanujnotes/Olauncher).
 
 - **App launcher** — type to search, auto-launches when narrowed to one result
 - **File navigator** — browse and open files and directories with `/f`
-- **Window switcher** — focus any open window across workspaces with `/win`
 - **Calculator** — evaluate math expressions inline with `=`
 - **Claude AI** — quick inline answers with `ai`, or open a full Claude Code session with `cc`
 - **Multi-monitor** — always appears centered on whichever monitor your cursor is on
@@ -179,8 +178,9 @@ set top_offset = 120    # distance from top of monitor in pixels
 ```
 set max_app_results  = 10
 set max_file_results = 50
-set max_win_results  = 50
 ```
+
+
 
 ### Default directory
 
@@ -247,8 +247,6 @@ open .txt .md .cfg .conf  = gedit
 | `/f /path/` | Navigate path progressively |
 | `/f/o /path/file` | Open file with configured or default app |
 | `/fd ` | Browse configured default directory |
-| `/win` | List all open windows |
-| `/win query` | Search windows by title or app |
 | `= expr` | Evaluate math expression, Enter copies result |
 | `ai query` | Ask Claude inline, Enter copies response |
 | `cc /path` | Open Claude Code in directory |
@@ -268,7 +266,6 @@ app_index.c   - Desktop application indexing via GIO
 launcher.c    - Application launching
 config.c      - Config parsing and usage history
 file_nav.c    - Directory listing, file search, xdg-open integration
-win_nav.c     - Window listing and focusing via niri IPC
 calc.c        - Recursive descent math expression evaluator
 animation.c   - Show/hide slide animation
 ```
