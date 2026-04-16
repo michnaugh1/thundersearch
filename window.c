@@ -12,6 +12,45 @@
 #include "win_nav.h"
 #include "animation.h"
 
+/* Return the monitor the cursor is currently on, falling back to monitor 0.
+ * Caller must g_object_unref() the result. */
+static GdkMonitor *
+get_monitor_at_cursor(GdkDisplay *display)
+{
+    GListModel *monitors = gdk_display_get_monitors(display);
+    guint n = g_list_model_get_n_items(monitors);
+
+#ifdef GDK_WINDOWING_X11
+    if (GDK_IS_X11_DISPLAY(display)) {
+        G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+        Display *xdisplay = gdk_x11_display_get_xdisplay(display);
+        G_GNUC_END_IGNORE_DEPRECATIONS
+
+        Window root_ret, child_ret;
+        int root_x, root_y, win_x, win_y;
+        unsigned int mask;
+        XQueryPointer(xdisplay, DefaultRootWindow(xdisplay),
+                      &root_ret, &child_ret,
+                      &root_x, &root_y, &win_x, &win_y, &mask);
+
+        for (guint i = 0; i < n; i++) {
+            GdkMonitor *mon = g_list_model_get_item(monitors, i);
+            GdkRectangle geom;
+            gdk_monitor_get_geometry(mon, &geom);
+            /* GDK geometry is in logical pixels; XQueryPointer returns the
+             * same logical coords under XWayland, so compare directly. */
+            if (root_x >= geom.x && root_x < geom.x + geom.width &&
+                root_y >= geom.y && root_y < geom.y + geom.height)
+                return mon;   /* caller owns the ref */
+            g_object_unref(mon);
+        }
+    }
+#endif
+
+    /* Fallback: first monitor */
+    return g_list_model_get_item(monitors, 0);
+}
+
 static void
 center_window_x11(GtkWidget *window)
 {
@@ -24,10 +63,7 @@ center_window_x11(GtkWidget *window)
     if (!surface)
         return;
 
-    /* Use the primary monitor. Avoid get_monitor_at_surface since the
-     * window may not have a valid position yet when called pre-map. */
-    GListModel *monitors = gdk_display_get_monitors(display);
-    GdkMonitor *monitor = g_list_model_get_item(monitors, 0);
+    GdkMonitor *monitor = get_monitor_at_cursor(display);
     if (!monitor)
         return;
 
@@ -92,6 +128,14 @@ clear_listbox(GtkListBox *listbox)
     while ((child = gtk_widget_get_first_child(GTK_WIDGET(listbox))) != NULL) {
         gtk_list_box_remove(GTK_LIST_BOX(listbox), child);
     }
+}
+
+static void
+select_first_row(GtkListBox *listbox)
+{
+    GtkListBoxRow *row = gtk_list_box_get_row_at_index(listbox, 0);
+    if (row)
+        gtk_list_box_select_row(listbox, row);
 }
 
 static void
@@ -299,6 +343,7 @@ update_app_results(WindowData *data, const char *query)
     }
 
     gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), TRUE);
+    select_first_row(GTK_LIST_BOX(data->listbox));
 }
 
 /* --- File navigation --- */
@@ -591,6 +636,8 @@ update_file_results(WindowData *data, const char *after_prefix,
 
     /* Show/hide revealer based on results */
     gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), result_count > 0);
+    if (result_count > 0)
+        select_first_row(GTK_LIST_BOX(data->listbox));
 
     g_free(search_dir);
     g_free(query);
@@ -687,6 +734,8 @@ update_win_results(WindowData *data, const char *query)
 
     /* Show/hide revealer based on results */
     gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), result_count > 0);
+    if (result_count > 0)
+        select_first_row(GTK_LIST_BOX(data->listbox));
 }
 
 /* --- Signal handlers --- */
