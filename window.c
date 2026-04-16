@@ -797,35 +797,49 @@ strip_ansi(const char *text)
     return g_string_free(out, FALSE);
 }
 
-/* --- cc mode: open a Claude Code terminal session --- */
+/* --- cc mode: open Claude Code in a directory --- */
+
+/* Expand ~ and return an absolute path. Caller must g_free(). */
+static char *
+expand_path(const char *path)
+{
+    if (path[0] == '~')
+        return g_build_filename(g_get_home_dir(), path + 1, NULL);
+    return g_strdup(path);
+}
 
 static void
-show_cc_hint(WindowData *data, const char *task)
+show_cc_hint(WindowData *data, const char *dir_input)
 {
     clear_listbox(GTK_LIST_BOX(data->listbox));
 
-    if (!task || *task == '\0') {
+    if (!dir_input || *dir_input == '\0') {
         gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), FALSE);
         return;
     }
 
+    char *resolved = expand_path(dir_input);
+    gboolean exists = g_file_test(resolved, G_FILE_TEST_IS_DIR);
+
     GtkWidget *row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_add_css_class(row_box, "result-row");
 
-    GtkWidget *icon = gtk_image_new_from_icon_name("utilities-terminal");
+    GtkWidget *icon = gtk_image_new_from_icon_name(
+        exists ? "utilities-terminal" : "dialog-warning");
     gtk_image_set_pixel_size(GTK_IMAGE(icon), 32);
     gtk_box_append(GTK_BOX(row_box), icon);
 
     GtkWidget *text_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     gtk_widget_set_valign(text_box, GTK_ALIGN_CENTER);
 
-    GtkWidget *label = gtk_label_new(task);
+    GtkWidget *label = gtk_label_new(resolved);
     gtk_label_set_xalign(GTK_LABEL(label), 0.0);
-    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_START);
     gtk_widget_add_css_class(label, "result-title");
     gtk_box_append(GTK_BOX(text_box), label);
 
-    GtkWidget *hint = gtk_label_new("Enter to open Claude Code session");
+    GtkWidget *hint = gtk_label_new(
+        exists ? "Enter to open Claude Code here" : "Directory not found");
     gtk_label_set_xalign(GTK_LABEL(hint), 0.0);
     gtk_widget_add_css_class(hint, "result-subtitle");
     gtk_box_append(GTK_BOX(text_box), hint);
@@ -836,15 +850,27 @@ show_cc_hint(WindowData *data, const char *task)
     gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(list_row), row_box);
     gtk_list_box_append(GTK_LIST_BOX(data->listbox), list_row);
     gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), TRUE);
-    gtk_list_box_select_row(GTK_LIST_BOX(data->listbox), GTK_LIST_BOX_ROW(list_row));
+    if (exists)
+        gtk_list_box_select_row(GTK_LIST_BOX(data->listbox), GTK_LIST_BOX_ROW(list_row));
+
+    g_free(resolved);
 }
 
 static void
-launch_claude_session(WindowData *data, const char *task)
+launch_claude_session(WindowData *data, const char *dir_input)
 {
+    char *dir = expand_path(dir_input);
+
+    if (!g_file_test(dir, G_FILE_TEST_IS_DIR)) {
+        g_warning("thundersearch: not a directory: %s", dir);
+        g_free(dir);
+        return;
+    }
+
     char *claude_path = find_claude_path();
     if (!claude_path) {
         g_warning("thundersearch: claude not found");
+        g_free(dir);
         return;
     }
 
@@ -852,14 +878,16 @@ launch_claude_session(WindowData *data, const char *task)
     if (!term_path) {
         g_warning("thundersearch: no terminal emulator found");
         g_free(claude_path);
+        g_free(dir);
         return;
     }
 
-    /* Build: bash -c 'claude <quoted-task>' */
-    char *quoted_task = g_shell_quote(task);
-    char *shell_cmd = g_strdup_printf("%s %s", claude_path, quoted_task);
-    g_free(quoted_task);
+    /* Build: bash -c 'cd /path && claude' */
+    char *quoted_dir = g_shell_quote(dir);
+    char *shell_cmd = g_strdup_printf("cd %s && %s", quoted_dir, claude_path);
+    g_free(quoted_dir);
     g_free(claude_path);
+    g_free(dir);
 
     const char *argv[] = { term_path, "-e", "bash", "-c", shell_cmd, NULL };
 
@@ -1422,12 +1450,16 @@ on_key_pressed(GtkEventControllerKey *controller,
 
         g_free(prefix);
 
-        /* cc mode: open Claude Code session */
+        /* cc mode: open Claude Code in a directory */
         if (g_str_has_prefix(text, "cc ")) {
-            const char *task = text + 3;
-            if (*task) {
-                hide_window(data);
-                launch_claude_session(data, task);
+            const char *dir_input = text + 3;
+            if (*dir_input) {
+                char *resolved = expand_path(dir_input);
+                if (g_file_test(resolved, G_FILE_TEST_IS_DIR)) {
+                    hide_window(data);
+                    launch_claude_session(data, dir_input);
+                }
+                g_free(resolved);
             }
             return TRUE;
         }
