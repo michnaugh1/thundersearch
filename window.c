@@ -874,33 +874,43 @@ launch_claude_session(WindowData *data, const char *dir_input)
         return;
     }
 
-    char *term_path = find_terminal_path(data);
-    if (!term_path) {
-        g_warning("thundersearch: no terminal emulator found");
-        g_free(claude_path);
-        g_free(dir);
-        return;
+    GError *error = NULL;
+
+    /* Prefer xdg-terminal-exec: supports --dir natively, no shell quoting needed */
+    char *xdg_term = g_find_program_in_path("xdg-terminal-exec");
+    if (xdg_term) {
+        char *dir_flag = g_strdup_printf("--dir=%s", dir);
+        const char *argv[] = { xdg_term, dir_flag, "--", claude_path, NULL };
+        g_spawn_async(NULL, (char **)argv, NULL,
+                      G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &error);
+        g_free(dir_flag);
+        g_free(xdg_term);
+    } else {
+        /* Fallback: terminal -e bash -c 'cd DIR && claude' */
+        char *term_path = find_terminal_path(data);
+        if (!term_path) {
+            g_warning("thundersearch: no terminal emulator found");
+            g_free(claude_path);
+            g_free(dir);
+            return;
+        }
+        char *quoted_dir = g_shell_quote(dir);
+        char *shell_cmd = g_strdup_printf("cd %s && %s", quoted_dir, claude_path);
+        g_free(quoted_dir);
+        const char *argv[] = { term_path, "-e", "bash", "-c", shell_cmd, NULL };
+        g_spawn_async(NULL, (char **)argv, NULL,
+                      G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &error);
+        g_free(term_path);
+        g_free(shell_cmd);
     }
 
-    /* Build: bash -c 'cd /path && claude' */
-    char *quoted_dir = g_shell_quote(dir);
-    char *shell_cmd = g_strdup_printf("cd %s && %s", quoted_dir, claude_path);
-    g_free(quoted_dir);
-    g_free(claude_path);
-    g_free(dir);
-
-    const char *argv[] = { term_path, "-e", "bash", "-c", shell_cmd, NULL };
-
-    GError *error = NULL;
-    g_spawn_async(NULL, (char **)argv, NULL,
-                  G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &error);
     if (error) {
         g_warning("thundersearch: failed to launch terminal: %s", error->message);
         g_error_free(error);
     }
 
-    g_free(term_path);
-    g_free(shell_cmd);
+    g_free(claude_path);
+    g_free(dir);
 }
 
 /* --- ai mode: quick inline Claude query --- */
