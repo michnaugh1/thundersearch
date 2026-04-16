@@ -11,6 +11,7 @@
 #include "file_nav.h"
 #include "win_nav.h"
 #include "animation.h"
+#include "calc.h"
 
 /* Return the monitor the cursor is currently on, falling back to monitor 0.
  * Caller must g_object_unref() the result. */
@@ -739,6 +740,65 @@ update_win_results(WindowData *data, const char *query)
         select_first_row(GTK_LIST_BOX(data->listbox));
 }
 
+/* --- Calculator mode --- */
+
+static void
+update_calc_result(WindowData *data, const char *expr)
+{
+    clear_listbox(GTK_LIST_BOX(data->listbox));
+    clear_file_results(data);
+    clear_win_results(data);
+
+    if (!expr || *expr == '\0') {
+        gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), FALSE);
+        return;
+    }
+
+    double result;
+    char *error_msg = NULL;
+    gboolean ok = calc_evaluate(expr, &result, &error_msg);
+
+    GtkWidget *row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(row_box, "result-row");
+
+    GtkWidget *icon = gtk_image_new_from_icon_name("accessories-calculator");
+    gtk_image_set_pixel_size(GTK_IMAGE(icon), 32);
+    gtk_box_append(GTK_BOX(row_box), icon);
+
+    GtkWidget *text_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_set_valign(text_box, GTK_ALIGN_CENTER);
+
+    if (ok) {
+        char *formatted = calc_format_result(result);
+        GtkWidget *label = gtk_label_new(formatted);
+        gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+        gtk_widget_add_css_class(label, "result-title");
+        gtk_box_append(GTK_BOX(text_box), label);
+
+        GtkWidget *hint = gtk_label_new("Enter to copy");
+        gtk_label_set_xalign(GTK_LABEL(hint), 0.0);
+        gtk_widget_add_css_class(hint, "result-subtitle");
+        gtk_box_append(GTK_BOX(text_box), hint);
+        g_free(formatted);
+    } else {
+        GtkWidget *label = gtk_label_new(error_msg ? error_msg : "Invalid expression");
+        gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+        gtk_widget_add_css_class(label, "result-subtitle");
+        gtk_box_append(GTK_BOX(text_box), label);
+        g_free(error_msg);
+    }
+
+    gtk_box_append(GTK_BOX(row_box), text_box);
+
+    GtkWidget *list_row = gtk_list_box_row_new();
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(list_row), row_box);
+    gtk_list_box_append(GTK_LIST_BOX(data->listbox), list_row);
+
+    gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), TRUE);
+    gtk_list_box_select_row(GTK_LIST_BOX(data->listbox),
+                            GTK_LIST_BOX_ROW(list_row));
+}
+
 /* --- Signal handlers --- */
 
 static void
@@ -765,6 +825,21 @@ on_entry_changed(GtkEditable *editable, gpointer user_data)
     }
 
     g_free(prefix);
+
+    /* = prefix: calculator mode */
+    if (*text == '=') {
+        cancel_file_timeout(data);
+        cancel_win_timeout(data);
+        if (data->current_matches) {
+            g_list_free(data->current_matches);
+            data->current_matches = NULL;
+        }
+        /* Skip '=' and any leading space */
+        const char *expr = text + 1;
+        while (*expr == ' ') expr++;
+        update_calc_result(data, expr);
+        return;
+    }
 
     /* /win prefix: window navigation */
     if (g_str_has_prefix(text, "/win ")) {
@@ -938,6 +1013,21 @@ on_key_pressed(GtkEventControllerKey *controller,
         }
 
         g_free(prefix);
+
+        /* Calculator mode: copy result to clipboard */
+        if (*text == '=') {
+            const char *expr = text + 1;
+            while (*expr == ' ') expr++;
+            double result;
+            if (calc_evaluate(expr, &result, NULL)) {
+                char *formatted = calc_format_result(result);
+                GdkClipboard *cb = gtk_widget_get_clipboard(data->entry);
+                gdk_clipboard_set_text(cb, formatted);
+                g_free(formatted);
+                hide_window(data);
+            }
+            return TRUE;
+        }
 
         /* /win mode */
         if (g_str_has_prefix(text, "/win")) {

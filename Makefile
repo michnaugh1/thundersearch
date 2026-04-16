@@ -16,7 +16,8 @@ SOURCES = main.c \
           config.c \
           file_nav.c \
           win_nav.c \
-          animation.c
+          animation.c \
+          calc.c
 
 OBJECTS = $(SOURCES:%.c=$(OBJ_DIR)/%.o)
 
