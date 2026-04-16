@@ -107,20 +107,6 @@ Browse and open files starting from your home directory.
 
 ---
 
-### Window switcher — `/win`
-
-Search and focus any open window across all workspaces. Requires the **niri** compositor.
-
-```
-/win          → list all open windows
-/win fire     → narrows to Firefox
-/win code     → narrows to VS Code
-```
-
-Auto-focuses when narrowed to one result. Press `Enter` to focus the first result immediately.
-
----
-
 ### Calculator — `=`
 
 Type `=` followed by any math expression. The result updates live as you type. Press `Enter` to copy the result to the clipboard.
