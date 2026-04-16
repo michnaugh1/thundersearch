@@ -874,40 +874,36 @@ launch_claude_session(WindowData *data, const char *dir_input)
         return;
     }
 
-    /* Build a clean environment: inherit everything but remove GDK_BACKEND
-     * so the spawned terminal (a Wayland-native app) isn't forced onto X11. */
+    /* Build a clean environment without GDK_BACKEND so Wayland terminals work */
     char **envp = g_get_environ();
     envp = g_environ_unsetenv(envp, "GDK_BACKEND");
 
     GError *error = NULL;
+    gboolean spawned = FALSE;
 
-    /* Prefer xdg-terminal-exec: supports --dir natively, no shell quoting needed */
     char *xdg_term = g_find_program_in_path("xdg-terminal-exec");
     if (xdg_term) {
         char *dir_flag = g_strdup_printf("--dir=%s", dir);
         const char *argv[] = { xdg_term, dir_flag, "--", claude_path, NULL };
-        g_spawn_async(NULL, (char **)argv, envp,
-                      G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &error);
+        spawned = g_spawn_async(NULL, (char **)argv, envp,
+                                G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &error);
         g_free(dir_flag);
         g_free(xdg_term);
-    } else {
-        /* Fallback: terminal -e bash -c 'cd DIR && claude' */
+    }
+
+    if (!spawned) {
+        g_clear_error(&error);
         char *term_path = find_terminal_path(data);
-        if (!term_path) {
-            g_warning("thundersearch: no terminal emulator found");
-            g_strfreev(envp);
-            g_free(claude_path);
-            g_free(dir);
-            return;
+        if (term_path) {
+            char *quoted_dir = g_shell_quote(dir);
+            char *shell_cmd = g_strdup_printf("cd %s && %s", quoted_dir, claude_path);
+            g_free(quoted_dir);
+            const char *argv[] = { term_path, "-e", "bash", "-c", shell_cmd, NULL };
+            spawned = g_spawn_async(NULL, (char **)argv, envp,
+                                    G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &error);
+            g_free(term_path);
+            g_free(shell_cmd);
         }
-        char *quoted_dir = g_shell_quote(dir);
-        char *shell_cmd = g_strdup_printf("cd %s && %s", quoted_dir, claude_path);
-        g_free(quoted_dir);
-        const char *argv[] = { term_path, "-e", "bash", "-c", shell_cmd, NULL };
-        g_spawn_async(NULL, (char **)argv, envp,
-                      G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &error);
-        g_free(term_path);
-        g_free(shell_cmd);
     }
 
     if (error) {
@@ -1473,8 +1469,11 @@ on_key_pressed(GtkEventControllerKey *controller,
             if (*dir_input) {
                 char *resolved = expand_path(dir_input);
                 if (g_file_test(resolved, G_FILE_TEST_IS_DIR)) {
+                    /* Copy before hide_window clears the entry and invalidates text */
+                    char *dir_copy = g_strdup(dir_input);
                     hide_window(data);
-                    launch_claude_session(data, dir_input);
+                    launch_claude_session(data, dir_copy);
+                    g_free(dir_copy);
                 }
                 g_free(resolved);
             }
