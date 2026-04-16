@@ -20,6 +20,7 @@ config_new(void)
     config->history_path = g_build_filename(data_dir, "thundersearch", "history", NULL);
 
     config->default_dir = NULL;
+    config->terminal_cmd = NULL;
     config->win_width = 680;
     config->top_offset = 120;
     config->max_app_results = 10;
@@ -107,6 +108,9 @@ config_load(Config *config)
                             config->default_dir = g_build_filename(g_get_home_dir(), val + 1, NULL);
                         else
                             config->default_dir = g_strdup(val);
+                    } else if (strcmp(key, "terminal") == 0) {
+                        g_free(config->terminal_cmd);
+                        config->terminal_cmd = g_strdup(val);
                     }
                 }
                 continue;
@@ -149,6 +153,9 @@ config_load(Config *config)
             fprintf(fp, "# --- Appearance ---\n");
             fprintf(fp, "# set win_width = 680        # window width in pixels\n");
             fprintf(fp, "# set top_offset = 120       # distance from top of monitor in pixels\n");
+            fprintf(fp, "\n");
+            fprintf(fp, "# --- Claude integration ---\n");
+            fprintf(fp, "# set terminal = kitty       # terminal for 'cc' sessions (default: autodetect)\n");
             fprintf(fp, "\n");
             fprintf(fp, "# --- Result limits ---\n");
             fprintf(fp, "# set max_app_results = 10\n");
@@ -237,6 +244,7 @@ config_free(Config *config)
     g_free(config->config_path);
     g_free(config->history_path);
     g_free(config->default_dir);
+    g_free(config->terminal_cmd);
     g_free(config);
 }
 

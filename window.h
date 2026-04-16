@@ -30,6 +30,10 @@ typedef struct {
     guint anim_tick_id;             /* Animation tick source ID */
     gboolean hiding;                /* TRUE during hide animation */
     gint base_margin_top;           /* Base top margin for animation */
+    /* AI query state */
+    char *ai_result;                /* Last response from claude -p, or NULL */
+    gboolean ai_waiting;            /* TRUE while subprocess is running */
+    GCancellable *ai_cancel;        /* Cancels in-flight ai query */
 } WindowData;
 
 GtkWidget *create_launcher_window(GtkApplication *app, AppIndex *index, Config *config, WindowData **out_data);

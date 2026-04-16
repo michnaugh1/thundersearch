@@ -15,6 +15,7 @@ typedef struct {
     int max_app_results;        /* max app results to show */
     int max_file_results;       /* max file results to show */
     int max_win_results;        /* max window results to show */
+    char *terminal_cmd;         /* terminal emulator command, or NULL for autodetect */
 } Config;
 
 Config *config_new(void);

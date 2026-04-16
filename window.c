@@ -13,6 +13,9 @@
 #include "animation.h"
 #include "calc.h"
 
+/* Forward declarations */
+static void cancel_ai_query(WindowData *data);
+
 /* Return the monitor the cursor is currently on, falling back to monitor 0.
  * Caller must g_object_unref() the result. */
 static GdkMonitor *
@@ -199,6 +202,7 @@ hide_window(WindowData *data)
 
     cancel_file_timeout(data);
     cancel_win_timeout(data);
+    cancel_ai_query(data);
 
     data->suppress_entry_change = TRUE;
     gtk_editable_set_text(GTK_EDITABLE(data->entry), "");
@@ -740,6 +744,355 @@ update_win_results(WindowData *data, const char *query)
         select_first_row(GTK_LIST_BOX(data->listbox));
 }
 
+/* --- Claude integration helpers --- */
+
+static char *
+find_claude_path(void)
+{
+    char *path = g_find_program_in_path("claude");
+    if (path) return path;
+
+    /* Fallback: ~/.local/bin/claude */
+    char *local = g_build_filename(g_get_home_dir(), ".local", "bin", "claude", NULL);
+    if (g_file_test(local, G_FILE_TEST_IS_EXECUTABLE))
+        return local;
+    g_free(local);
+    return NULL;
+}
+
+static char *
+find_terminal_path(WindowData *data)
+{
+    /* Use config override first */
+    if (data->config->terminal_cmd && *data->config->terminal_cmd)
+        return g_find_program_in_path(data->config->terminal_cmd);
+
+    /* Try $TERMINAL env var, then standard fallbacks */
+    const char *env_term = g_getenv("TERMINAL");
+    if (env_term) {
+        char *path = g_find_program_in_path(env_term);
+        if (path) return path;
+    }
+    char *path = g_find_program_in_path("x-terminal-emulator");
+    if (path) return path;
+    return g_find_program_in_path("sensible-terminal");
+}
+
+/* Strip ANSI escape sequences from text */
+static char *
+strip_ansi(const char *text)
+{
+    GString *out = g_string_sized_new(strlen(text));
+    const char *p = text;
+    while (*p) {
+        if (*p == '\x1b' && *(p + 1) == '[') {
+            p += 2;
+            while (*p && (*p == ';' || (*p >= '0' && *p <= '9')))
+                p++;
+            if (*p) p++;  /* skip final letter */
+        } else {
+            g_string_append_c(out, *p++);
+        }
+    }
+    return g_string_free(out, FALSE);
+}
+
+/* --- cc mode: open a Claude Code terminal session --- */
+
+static void
+show_cc_hint(WindowData *data, const char *task)
+{
+    clear_listbox(GTK_LIST_BOX(data->listbox));
+
+    if (!task || *task == '\0') {
+        gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), FALSE);
+        return;
+    }
+
+    GtkWidget *row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(row_box, "result-row");
+
+    GtkWidget *icon = gtk_image_new_from_icon_name("utilities-terminal");
+    gtk_image_set_pixel_size(GTK_IMAGE(icon), 32);
+    gtk_box_append(GTK_BOX(row_box), icon);
+
+    GtkWidget *text_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_set_valign(text_box, GTK_ALIGN_CENTER);
+
+    GtkWidget *label = gtk_label_new(task);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+    gtk_widget_add_css_class(label, "result-title");
+    gtk_box_append(GTK_BOX(text_box), label);
+
+    GtkWidget *hint = gtk_label_new("Enter to open Claude Code session");
+    gtk_label_set_xalign(GTK_LABEL(hint), 0.0);
+    gtk_widget_add_css_class(hint, "result-subtitle");
+    gtk_box_append(GTK_BOX(text_box), hint);
+
+    gtk_box_append(GTK_BOX(row_box), text_box);
+
+    GtkWidget *list_row = gtk_list_box_row_new();
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(list_row), row_box);
+    gtk_list_box_append(GTK_LIST_BOX(data->listbox), list_row);
+    gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), TRUE);
+    gtk_list_box_select_row(GTK_LIST_BOX(data->listbox), GTK_LIST_BOX_ROW(list_row));
+}
+
+static void
+launch_claude_session(WindowData *data, const char *task)
+{
+    char *claude_path = find_claude_path();
+    if (!claude_path) {
+        g_warning("thundersearch: claude not found");
+        return;
+    }
+
+    char *term_path = find_terminal_path(data);
+    if (!term_path) {
+        g_warning("thundersearch: no terminal emulator found");
+        g_free(claude_path);
+        return;
+    }
+
+    /* Build: bash -c 'claude <quoted-task>' */
+    char *quoted_task = g_shell_quote(task);
+    char *shell_cmd = g_strdup_printf("%s %s", claude_path, quoted_task);
+    g_free(quoted_task);
+    g_free(claude_path);
+
+    const char *argv[] = { term_path, "-e", "bash", "-c", shell_cmd, NULL };
+
+    GError *error = NULL;
+    g_spawn_async(NULL, (char **)argv, NULL,
+                  G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &error);
+    if (error) {
+        g_warning("thundersearch: failed to launch terminal: %s", error->message);
+        g_error_free(error);
+    }
+
+    g_free(term_path);
+    g_free(shell_cmd);
+}
+
+/* --- ai mode: quick inline Claude query --- */
+
+static void
+show_ai_prompt_hint(WindowData *data, const char *query)
+{
+    clear_listbox(GTK_LIST_BOX(data->listbox));
+
+    if (!query || *query == '\0') {
+        gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), FALSE);
+        return;
+    }
+
+    GtkWidget *row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(row_box, "result-row");
+
+    GtkWidget *icon = gtk_image_new_from_icon_name("dialog-question");
+    gtk_image_set_pixel_size(GTK_IMAGE(icon), 32);
+    gtk_box_append(GTK_BOX(row_box), icon);
+
+    GtkWidget *text_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_set_valign(text_box, GTK_ALIGN_CENTER);
+
+    GtkWidget *label = gtk_label_new(query);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+    gtk_widget_add_css_class(label, "result-title");
+    gtk_box_append(GTK_BOX(text_box), label);
+
+    GtkWidget *hint = gtk_label_new("Enter to ask Claude");
+    gtk_label_set_xalign(GTK_LABEL(hint), 0.0);
+    gtk_widget_add_css_class(hint, "result-subtitle");
+    gtk_box_append(GTK_BOX(text_box), hint);
+
+    gtk_box_append(GTK_BOX(row_box), text_box);
+
+    GtkWidget *list_row = gtk_list_box_row_new();
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(list_row), row_box);
+    gtk_list_box_append(GTK_LIST_BOX(data->listbox), list_row);
+    gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), TRUE);
+    gtk_list_box_select_row(GTK_LIST_BOX(data->listbox), GTK_LIST_BOX_ROW(list_row));
+}
+
+static void
+show_ai_thinking(WindowData *data)
+{
+    clear_listbox(GTK_LIST_BOX(data->listbox));
+
+    GtkWidget *row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(row_box, "result-row");
+
+    GtkWidget *icon = gtk_image_new_from_icon_name("dialog-question");
+    gtk_image_set_pixel_size(GTK_IMAGE(icon), 32);
+    gtk_box_append(GTK_BOX(row_box), icon);
+
+    GtkWidget *label = gtk_label_new("Asking Claude…");
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    gtk_widget_add_css_class(label, "result-subtitle");
+    gtk_box_append(GTK_BOX(row_box), label);
+
+    GtkWidget *list_row = gtk_list_box_row_new();
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(list_row), row_box);
+    gtk_list_box_append(GTK_LIST_BOX(data->listbox), list_row);
+    gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), TRUE);
+}
+
+static void
+show_ai_response(WindowData *data, const char *response)
+{
+    clear_listbox(GTK_LIST_BOX(data->listbox));
+
+    GtkWidget *row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(row_box, "result-row");
+
+    GtkWidget *icon = gtk_image_new_from_icon_name("dialog-information");
+    gtk_image_set_pixel_size(GTK_IMAGE(icon), 32);
+    gtk_box_append(GTK_BOX(row_box), icon);
+
+    GtkWidget *text_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_valign(text_box, GTK_ALIGN_CENTER);
+    gtk_widget_set_hexpand(text_box, TRUE);
+
+    GtkWidget *label = gtk_label_new(response);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_max_width_chars(GTK_LABEL(label), 60);
+    gtk_label_set_selectable(GTK_LABEL(label), FALSE);
+    gtk_widget_add_css_class(label, "result-title");
+    gtk_box_append(GTK_BOX(text_box), label);
+
+    GtkWidget *hint = gtk_label_new("Enter to copy · Esc to close");
+    gtk_label_set_xalign(GTK_LABEL(hint), 0.0);
+    gtk_widget_add_css_class(hint, "result-subtitle");
+    gtk_box_append(GTK_BOX(text_box), hint);
+
+    gtk_box_append(GTK_BOX(row_box), text_box);
+
+    GtkWidget *list_row = gtk_list_box_row_new();
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(list_row), row_box);
+    gtk_list_box_append(GTK_LIST_BOX(data->listbox), list_row);
+    gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), TRUE);
+    gtk_list_box_select_row(GTK_LIST_BOX(data->listbox), GTK_LIST_BOX_ROW(list_row));
+}
+
+static void
+cancel_ai_query(WindowData *data)
+{
+    if (data->ai_cancel) {
+        g_cancellable_cancel(data->ai_cancel);
+        g_object_unref(data->ai_cancel);
+        data->ai_cancel = NULL;
+    }
+    data->ai_waiting = FALSE;
+    g_free(data->ai_result);
+    data->ai_result = NULL;
+}
+
+static void
+on_ai_subprocess_done(GObject *source, GAsyncResult *async_result, gpointer user_data)
+{
+    WindowData *data = (WindowData *)user_data;
+    GSubprocess *proc = G_SUBPROCESS(source);
+    char *stdout_buf = NULL;
+    char *stderr_buf = NULL;
+    GError *error = NULL;
+
+    gboolean ok = g_subprocess_communicate_utf8_finish(proc, async_result,
+                                                        &stdout_buf, &stderr_buf,
+                                                        &error);
+    g_object_unref(proc);
+
+    /* If cancelled or window moved on, discard */
+    if (!ok || (data->ai_cancel && g_cancellable_is_cancelled(data->ai_cancel))) {
+        g_clear_error(&error);
+        g_free(stdout_buf);
+        g_free(stderr_buf);
+        data->ai_waiting = FALSE;
+        return;
+    }
+
+    data->ai_waiting = FALSE;
+
+    char *response;
+    if (stdout_buf && *stdout_buf) {
+        char *stripped = strip_ansi(stdout_buf);
+        g_strstrip(stripped);
+
+        /* Truncate at 600 chars with clean word break */
+        if (strlen(stripped) > 600) {
+            stripped[597] = '\0';
+            char *last_space = strrchr(stripped, ' ');
+            if (last_space && last_space > stripped + 400)
+                *last_space = '\0';
+            char *truncated = g_strdup_printf("%s…", stripped);
+            g_free(stripped);
+            response = truncated;
+        } else {
+            response = stripped;
+        }
+    } else {
+        response = g_strdup(error ? error->message : "(no response)");
+    }
+
+    g_free(data->ai_result);
+    data->ai_result = response;
+
+    /* Only update display if still in ai mode */
+    const char *text = gtk_editable_get_text(GTK_EDITABLE(data->entry));
+    if (text[0] == 'a' && text[1] == 'i' && (text[2] == ' ' || text[2] == '\0'))
+        show_ai_response(data, data->ai_result);
+
+    g_free(stdout_buf);
+    g_free(stderr_buf);
+    g_clear_error(&error);
+}
+
+static void
+run_ai_query(WindowData *data, const char *query)
+{
+    cancel_ai_query(data);
+    data->ai_cancel = g_cancellable_new();
+    data->ai_waiting = TRUE;
+
+    show_ai_thinking(data);
+
+    char *claude_path = find_claude_path();
+    if (!claude_path) {
+        data->ai_waiting = FALSE;
+        data->ai_result = g_strdup("claude not found — install Claude Code first");
+        show_ai_response(data, data->ai_result);
+        return;
+    }
+
+    /* Non-interactive, plain text, no tools for speed */
+    const char *argv[] = {
+        claude_path, "-p", "--output-format", "text", "--tools", "", query, NULL
+    };
+
+    GError *error = NULL;
+    GSubprocess *proc = g_subprocess_newv((const char * const *)argv,
+                                          G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+                                          G_SUBPROCESS_FLAGS_STDERR_PIPE,
+                                          &error);
+    g_free(claude_path);
+
+    if (!proc) {
+        data->ai_waiting = FALSE;
+        data->ai_result = g_strdup_printf("Failed to start claude: %s",
+                                           error ? error->message : "unknown error");
+        show_ai_response(data, data->ai_result);
+        g_clear_error(&error);
+        return;
+    }
+
+    g_subprocess_communicate_utf8_async(proc, NULL, data->ai_cancel,
+                                         on_ai_subprocess_done, data);
+}
+
 /* --- Calculator mode --- */
 
 static void
@@ -826,10 +1179,64 @@ on_entry_changed(GtkEditable *editable, gpointer user_data)
 
     g_free(prefix);
 
+    /* cc prefix: open Claude Code session in terminal */
+    if (g_str_has_prefix(text, "cc ")) {
+        cancel_file_timeout(data);
+        cancel_win_timeout(data);
+        cancel_ai_query(data);
+        if (data->current_matches) {
+            g_list_free(data->current_matches);
+            data->current_matches = NULL;
+        }
+        show_cc_hint(data, text + 3);
+        return;
+    }
+    if (g_strcmp0(text, "cc") == 0) {
+        cancel_file_timeout(data);
+        cancel_win_timeout(data);
+        cancel_ai_query(data);
+        if (data->current_matches) {
+            g_list_free(data->current_matches);
+            data->current_matches = NULL;
+        }
+        gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), FALSE);
+        return;
+    }
+
+    /* ai prefix: quick inline Claude query */
+    if (g_str_has_prefix(text, "ai ")) {
+        cancel_file_timeout(data);
+        cancel_win_timeout(data);
+        if (data->current_matches) {
+            g_list_free(data->current_matches);
+            data->current_matches = NULL;
+        }
+        /* If result is already shown for the same query, don't clear it */
+        if (!data->ai_waiting && !data->ai_result)
+            show_ai_prompt_hint(data, text + 3);
+        else if (!data->ai_waiting && data->ai_result)
+            show_ai_response(data, data->ai_result);
+        else
+            show_ai_thinking(data);
+        return;
+    }
+    if (g_strcmp0(text, "ai") == 0) {
+        cancel_file_timeout(data);
+        cancel_win_timeout(data);
+        cancel_ai_query(data);
+        if (data->current_matches) {
+            g_list_free(data->current_matches);
+            data->current_matches = NULL;
+        }
+        gtk_revealer_set_reveal_child(GTK_REVEALER(data->results_revealer), FALSE);
+        return;
+    }
+
     /* = prefix: calculator mode */
     if (*text == '=') {
         cancel_file_timeout(data);
         cancel_win_timeout(data);
+        cancel_ai_query(data);
         if (data->current_matches) {
             g_list_free(data->current_matches);
             data->current_matches = NULL;
@@ -859,6 +1266,7 @@ on_entry_changed(GtkEditable *editable, gpointer user_data)
     /* Normal app search */
     cancel_file_timeout(data);
     cancel_win_timeout(data);
+    cancel_ai_query(data);
     clear_file_results(data);
     clear_win_results(data);
     update_app_results(data, text);
@@ -1013,6 +1421,37 @@ on_key_pressed(GtkEventControllerKey *controller,
         }
 
         g_free(prefix);
+
+        /* cc mode: open Claude Code session */
+        if (g_str_has_prefix(text, "cc ")) {
+            const char *task = text + 3;
+            if (*task) {
+                hide_window(data);
+                launch_claude_session(data, task);
+            }
+            return TRUE;
+        }
+
+        /* ai mode: fire query on first Enter, copy on second */
+        if (g_str_has_prefix(text, "ai ")) {
+            const char *query = text + 3;
+            if (!*query) return TRUE;
+
+            if (data->ai_waiting) {
+                /* Still running — ignore Enter */
+                return TRUE;
+            }
+            if (data->ai_result) {
+                /* Result ready — copy to clipboard and close */
+                GdkClipboard *cb = gtk_widget_get_clipboard(data->entry);
+                gdk_clipboard_set_text(cb, data->ai_result);
+                hide_window(data);
+            } else {
+                /* First Enter — fire the query */
+                run_ai_query(data, query);
+            }
+            return TRUE;
+        }
 
         /* Calculator mode: copy result to clipboard */
         if (*text == '=') {
