@@ -23,6 +23,7 @@ static void
 on_activate(GtkApplication *app, gpointer user_data)
 {
     AppData *app_data = (AppData *)user_data;
+    static gboolean first_activation = TRUE;
 
     /* Create window only once (daemon mode) */
     if (!global_window_data) {
@@ -34,7 +35,13 @@ on_activate(GtkApplication *app, gpointer user_data)
         }
     }
 
-    /* Toggle on every activation — first press shows, second hides, etc. */
+    /* Skip toggle on the very first auto-activation */
+    if (first_activation) {
+        first_activation = FALSE;
+        return;
+    }
+
+    /* Toggle on every subsequent activation — first press shows, second hides, etc. */
     toggle_window(global_window_data);
 }
 
@@ -78,9 +85,9 @@ main(int argc, char *argv[])
     status = g_application_run(G_APPLICATION(app), argc, argv);
 
     /* Cleanup */
+    g_object_unref(app);
     config_free(config);
     app_index_free(index);
-    g_object_unref(app);
 
     return status;
 }

@@ -2,7 +2,7 @@
 Name=ThunderSearch
 Comment=Fast keyboard-driven launcher
 Exec=/usr/local/bin/thundersearch
-Icon=system-search
+Icon=thundersearch
 Type=Application
 Categories=Utility;
 Keywords=launcher;search;run;

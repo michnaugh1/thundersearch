@@ -10,7 +10,7 @@ config_new(void)
     const char *data_dir = g_get_user_data_dir();
     
     config->nicknames = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
-    config->usage_counts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    config->usage_counts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     config->file_openers = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     
     /* Config file: ~/.config/thundersearch/config */

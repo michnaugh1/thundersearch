@@ -4,6 +4,8 @@
 #ifdef GDK_WINDOWING_X11
 #include <gdk/x11/gdkx.h>
 #include <X11/Xlib.h>
+#include <X11/Xatom.h>
+#include <X11/Xresource.h>
 #endif
 #include "window.h"
 #include "matcher.h"
@@ -15,43 +17,23 @@
 /* Forward declarations */
 static void cancel_ai_query(WindowData *data);
 
-/* Return the monitor the cursor is currently on, falling back to monitor 0.
- * Caller must g_object_unref() the result. */
+/* Return the primary monitor. Caller must g_object_unref() the result. */
 static GdkMonitor *
-get_monitor_at_cursor(GdkDisplay *display)
+get_primary_monitor(GdkDisplay *display)
 {
-    GListModel *monitors = gdk_display_get_monitors(display);
-    guint n = g_list_model_get_n_items(monitors);
-
+    GdkMonitor *mon = NULL;
 #ifdef GDK_WINDOWING_X11
     if (GDK_IS_X11_DISPLAY(display)) {
-        G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-        Display *xdisplay = gdk_x11_display_get_xdisplay(display);
-        G_GNUC_END_IGNORE_DEPRECATIONS
-
-        Window root_ret, child_ret;
-        int root_x, root_y, win_x, win_y;
-        unsigned int mask;
-        XQueryPointer(xdisplay, DefaultRootWindow(xdisplay),
-                      &root_ret, &child_ret,
-                      &root_x, &root_y, &win_x, &win_y, &mask);
-
-        for (guint i = 0; i < n; i++) {
-            GdkMonitor *mon = g_list_model_get_item(monitors, i);
-            GdkRectangle geom;
-            gdk_monitor_get_geometry(mon, &geom);
-            /* GDK geometry is in logical pixels; XQueryPointer returns the
-             * same logical coords under XWayland, so compare directly. */
-            if (root_x >= geom.x && root_x < geom.x + geom.width &&
-                root_y >= geom.y && root_y < geom.y + geom.height)
-                return mon;   /* caller owns the ref */
-            g_object_unref(mon);
-        }
+        mon = gdk_x11_display_get_primary_monitor(display);
     }
 #endif
+    if (mon) {
+        g_object_ref(mon);
+        return mon;
+    }
 
     /* Fallback: first monitor */
-    return g_list_model_get_item(monitors, 0);
+    return g_list_model_get_item(gdk_display_get_monitors(display), 0);
 }
 
 static void
@@ -67,13 +49,14 @@ center_window_x11(WindowData *data)
     if (!surface)
         return;
 
-    GdkMonitor *monitor = get_monitor_at_cursor(display);
+    GdkMonitor *monitor = get_primary_monitor(display);
     if (!monitor)
         return;
 
     GdkRectangle geometry;
     gdk_monitor_get_geometry(monitor, &geometry);
-    gint scale = gdk_monitor_get_scale_factor(monitor);
+    gint gdk_scale = gdk_monitor_get_scale_factor(monitor);
+    int width_mm = gdk_monitor_get_width_mm(monitor);
     g_object_unref(monitor);
 
     G_GNUC_BEGIN_IGNORE_DEPRECATIONS
@@ -81,10 +64,69 @@ center_window_x11(WindowData *data)
     Window xwindow = gdk_x11_surface_get_xid(surface);
     G_GNUC_END_IGNORE_DEPRECATIONS
 
-    /* Geometry is in logical pixels; XMoveWindow needs physical pixels */
     int win_width = data->config->win_width;
-    int x = (geometry.x + (geometry.width - win_width) / 2) * scale;
-    int y = (geometry.y + data->config->top_offset) * scale;
+    int x, y;
+
+    if (g_getenv("WAYLAND_DISPLAY")) {
+        /* XWayland with xwayland-native-scaling: GDK reports X11 virtual
+         * pixels (2x physical), but XMoveWindow coords are Wayland logical.
+         * Try several methods to find the real scale factor. */
+        int xw_scale = 1;
+
+        /* Method 1: _XWAYLAND_GLOBAL_OUTPUT_SCALE set by Mutter on root window */
+        {
+            Atom scale_atom = XInternAtom(xdisplay, "_XWAYLAND_GLOBAL_OUTPUT_SCALE", True);
+            if (scale_atom != None) {
+                Atom actual_type;
+                int actual_format;
+                unsigned long nitems, bytes_after;
+                unsigned char *prop = NULL;
+                if (XGetWindowProperty(xdisplay, DefaultRootWindow(xdisplay),
+                                       scale_atom, 0, 1, False, XA_CARDINAL,
+                                       &actual_type, &actual_format, &nitems,
+                                       &bytes_after, &prop) == Success
+                    && prop && nitems >= 1) {
+                    xw_scale = MAX(1, (int)(*(unsigned long *)prop));
+                    XFree(prop);
+                }
+            }
+        }
+
+        /* Method 2: GDK surface scale factor */
+        if (xw_scale <= 1) {
+            G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+            int s = gdk_surface_get_scale_factor(surface);
+            G_GNUC_END_IGNORE_DEPRECATIONS
+            if (s > 1)
+                xw_scale = s;
+        }
+
+        /* Method 3: GDK_SCALE env var */
+        if (xw_scale <= 1) {
+            const char *env = g_getenv("GDK_SCALE");
+            if (env && atoi(env) > 1)
+                xw_scale = atoi(env);
+        }
+
+        /* Method 4: infer from reported pixel width vs physical mm.
+         * Under xwayland-native-scaling the virtual screen is Nx the physical
+         * resolution, so DPI = pixels / (mm/25.4) will be ~96*N. */
+        if (xw_scale <= 1 && width_mm > 0) {
+            double dpi = (double)geometry.width / ((double)width_mm / 25.4);
+            int inferred = MAX(1, (int)round(dpi / 96.0));
+            if (inferred > 1)
+                xw_scale = inferred;
+        }
+
+        int log_x = geometry.x / xw_scale;
+        int log_w = geometry.width / xw_scale;
+        x = log_x + (log_w - win_width) / 2;
+        y = geometry.y / xw_scale + data->config->top_offset;
+    } else {
+        /* Native X11: geometry is in logical pixels, XMoveWindow needs physical */
+        x = (geometry.x + (geometry.width - win_width) / 2) * gdk_scale;
+        y = (geometry.y + data->config->top_offset) * gdk_scale;
+    }
 
     XMoveWindow(xdisplay, xwindow, x, y);
     XFlush(xdisplay);
@@ -206,6 +248,31 @@ hide_window(WindowData *data)
     data->anim_tick_id = g_timeout_add(16, window_anim_tick, data);
 }
 
+/* Idle callback: reposition + grab keyboard after GTK's layout cycle */
+static gboolean
+show_window_post_map(gpointer user_data)
+{
+    WindowData *data = (WindowData *)user_data;
+#ifdef GDK_WINDOWING_X11
+    GdkDisplay *display = gdk_display_get_default();
+    if (GDK_IS_X11_DISPLAY(display)) {
+        GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(data->window));
+        if (surface) {
+            center_window_x11(data);
+            G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+            Display *xdisplay = gdk_x11_display_get_xdisplay(display);
+            Window xid = gdk_x11_surface_get_xid(surface);
+            G_GNUC_END_IGNORE_DEPRECATIONS
+            XSetInputFocus(xdisplay, xid, RevertToPointerRoot, CurrentTime);
+            XGrabKeyboard(xdisplay, xid, True,
+                          GrabModeAsync, GrabModeAsync, CurrentTime);
+            XFlush(xdisplay);
+        }
+    }
+#endif
+    return G_SOURCE_REMOVE;
+}
+
 static void
 show_window(WindowData *data)
 {
@@ -218,30 +285,13 @@ show_window(WindowData *data)
     gtk_widget_set_opacity(data->main_container, 0.0);
     gtk_widget_set_margin_top(data->main_container, data->base_margin_top + 30);
 
-    /* With override_redirect the WM cannot touch us — position before map */
-    center_window_x11(data);
-
     gtk_widget_set_visible(data->window, TRUE);
     gtk_widget_grab_focus(data->entry);
 
-#ifdef GDK_WINDOWING_X11
-    /* Flush so XMapWindow reaches the server, then grab keyboard */
-    GdkDisplay *display = gdk_display_get_default();
-    if (GDK_IS_X11_DISPLAY(display)) {
-        GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(data->window));
-        if (surface) {
-            gdk_display_flush(display);
-            G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-            Display *xdisplay = gdk_x11_display_get_xdisplay(display);
-            Window xid = gdk_x11_surface_get_xid(surface);
-            G_GNUC_END_IGNORE_DEPRECATIONS
-            XSetInputFocus(xdisplay, xid, RevertToPointerRoot, CurrentTime);
-            XGrabKeyboard(xdisplay, xid, True,
-                          GrabModeAsync, GrabModeAsync, CurrentTime);
-            XFlush(xdisplay);
-        }
-    }
-#endif
+    /* Reposition after GTK's layout/map cycle via idle callback */
+    g_idle_add(show_window_post_map, data);
+    /* Also try 100ms later to catch any deferred repositioning */
+    g_timeout_add(100, show_window_post_map, data);
 
     if (data->anim_tick_id > 0)
         g_source_remove(data->anim_tick_id);
@@ -281,6 +331,7 @@ update_app_results(WindowData *data, const char *query)
         AppEntry *app = (AppEntry *)matches->data;
         config_increment_usage(data->config, app->name);
         launch_app(app);
+        g_list_free(matches);
         hide_window(data);
         return;
     }
@@ -1399,6 +1450,7 @@ on_window_destroy(GtkWidget *widget, gpointer user_data)
     (void)widget;
 
     cancel_file_timeout(data);
+    cancel_ai_query(data);
     if (data->anim_tick_id > 0)
         g_source_remove(data->anim_tick_id);
     if (data->current_matches)
@@ -1565,6 +1617,14 @@ create_launcher_window(GtkApplication *app, AppIndex *index, Config *config, Win
                                      GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
         gtk_layer_set_anchor(GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_TOP, TRUE);
         gtk_layer_set_margin(GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_TOP, config->top_offset);
+
+        /* Pin to primary monitor (index 0) so it doesn't span across displays */
+        GdkDisplay *display = gdk_display_get_default();
+        GdkMonitor *primary = g_list_model_get_item(gdk_display_get_monitors(display), 0);
+        if (primary) {
+            gtk_layer_set_monitor(GTK_WINDOW(window), primary);
+            g_object_unref(primary);
+        }
     }
 
     /* Main container */

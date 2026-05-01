@@ -39,11 +39,14 @@ $(OBJ_DIR)/%.o: %.c | $(OBJ_DIR)
 clean:
 	rm -rf $(OBJ_DIR) $(TARGET)
 
-# Install binary + desktop file
+# Install binary + desktop file + icon
 install: $(TARGET)
 	install -D -m 755 $(TARGET) $(DESTDIR)/usr/local/bin/$(TARGET)
 	install -D -m 644 thundersearch.desktop \
 		$(DESTDIR)/usr/share/applications/thundersearch.desktop
+	install -D -m 644 thundersearch.png \
+		$(DESTDIR)/usr/share/icons/hicolor/512x512/apps/thundersearch.png
+	gtk-update-icon-cache -f -t $(DESTDIR)/usr/share/icons/hicolor || true
 
 # Install autostart entry for the current user (no DESTDIR support)
 install-autostart:

@@ -19,7 +19,10 @@
 typedef struct {
     const char *p;     /* current position in input */
     char *error;       /* first error encountered, or NULL */
+    int depth;         /* recursion depth to prevent stack overflow */
 } Parser;
+
+#define MAX_RECURSION_DEPTH 100
 
 static double parse_expr(Parser *ps);
 
@@ -33,6 +36,11 @@ skip_ws(Parser *ps)
 static double
 parse_primary(Parser *ps)
 {
+    if (++ps->depth > MAX_RECURSION_DEPTH) {
+        if (!ps->error) ps->error = g_strdup("expression too complex");
+        return 0.0;
+    }
+
     skip_ws(ps);
 
     if (ps->error)
@@ -47,6 +55,7 @@ parse_primary(Parser *ps)
             ps->p++;
         else if (!ps->error)
             ps->error = g_strdup("missing ')'");
+        ps->depth--;
         return val;
     }
 
@@ -56,8 +65,12 @@ parse_primary(Parser *ps)
         while (isalpha((unsigned char)*ps->p) || isdigit((unsigned char)*ps->p))
             ps->p++;
         size_t len = (size_t)(ps->p - start);
-        char name[32];
-        if (len >= sizeof(name)) len = sizeof(name) - 1;
+        char name[64];
+        if (len >= sizeof(name)) {
+            if (!ps->error) ps->error = g_strdup("identifier too long");
+            ps->depth--;
+            return 0.0;
+        }
         memcpy(name, start, len);
         name[len] = '\0';
 
@@ -73,6 +86,7 @@ parse_primary(Parser *ps)
             else if (!ps->error)
                 ps->error = g_strdup("missing ')'");
 
+            ps->depth--;
             if (strcmp(name, "sqrt")  == 0) return sqrt(arg);
             if (strcmp(name, "abs")   == 0) return fabs(arg);
             if (strcmp(name, "floor") == 0) return floor(arg);
@@ -91,6 +105,7 @@ parse_primary(Parser *ps)
             return 0.0;
         }
 
+        ps->depth--;
         /* Constant */
         if (strcmp(name, "pi")  == 0) return G_PI;
         if (strcmp(name, "e")   == 0) return G_E;
@@ -109,43 +124,55 @@ parse_primary(Parser *ps)
         if (end == ps->p) {
             if (!ps->error)
                 ps->error = g_strdup("expected number");
+            ps->depth--;
             return 0.0;
         }
         ps->p = end;
+        ps->depth--;
         return val;
     }
 
     if (!ps->error)
         ps->error = g_strdup_printf("unexpected character '%c'", *ps->p);
+    ps->depth--;
     return 0.0;
 }
 
 static double
 parse_unary(Parser *ps)
 {
+    if (++ps->depth > MAX_RECURSION_DEPTH) {
+        if (!ps->error) ps->error = g_strdup("expression too complex");
+        return 0.0;
+    }
+
     skip_ws(ps);
     if (*ps->p == '-') {
         ps->p++;
-        return -parse_unary(ps);
+        double val = -parse_unary(ps);
+        ps->depth--;
+        return val;
     }
     if (*ps->p == '+') {
         ps->p++;
-        return parse_unary(ps);
+        double val = parse_unary(ps);
+        ps->depth--;
+        return val;
     }
+    ps->depth--;
     return parse_primary(ps);
 }
 
 static double
 parse_power(Parser *ps)
 {
-    double base = parse_unary(ps);
+    double val = parse_unary(ps);
     skip_ws(ps);
     if (*ps->p == '^') {
         ps->p++;
-        double exp_val = parse_unary(ps);  /* right-associative */
-        return pow(base, exp_val);
+        val = pow(val, parse_power(ps));
     }
-    return base;
+    return val;
 }
 
 static double

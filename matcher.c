@@ -104,7 +104,7 @@ match_apps(AppIndex *index, Config *config, const char *query, int max_results)
 
     /* Limit results */
     if (max_results > 0) {
-        GList *tail = g_list_nth(matches, max_results);
+        GList *tail = g_list_nth(matches, max_results - 1);
         if (tail) {
             g_list_free(tail->next);
             tail->next = NULL;
